@@ -276,7 +276,10 @@ public class GrillOverlay {
                 submit(Lang.t("popup_slip_answer"), true);
             }
         });
-        if (rest) {
+        // 起身提醒本来就不给这个出口；设置里也能关掉。关掉之后只剩
+        // 「说清楚了，继续」一条路——想彻底不给自己留台阶就关掉它。
+        final boolean showSlip = !rest && cfg.showSlip();
+        if (!showSlip) {
             slip.setVisibility(View.GONE);
         }
         LinearLayout.LayoutParams slipLp = new LinearLayout.LayoutParams(
@@ -293,7 +296,7 @@ public class GrillOverlay {
             }
         });
         buttons.addView(passBtn, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f));
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, showSlip ? 1.2f : 1f));
 
         card.addView(buttons, blp);
 

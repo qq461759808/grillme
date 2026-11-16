@@ -28,6 +28,7 @@ public final class Cfg {
     public static final String BLOCK_PASTE = "block_paste";
     public static final String COOLDOWN = "cooldown_seconds";
     public static final String REPEAT_WARN = "repeat_warn";
+    public static final String SHOW_SLIP = "show_moyu";
 
     // 提醒方式
     public static final String SOUND = "sound";
@@ -183,6 +184,11 @@ public final class Cfg {
 
     public int repeatWarn() {
         return Math.max(0, i(REPEAT_WARN, 2));
+    }
+
+    /** 「我承认在摸鱼」这个出口要不要给。键名跟电脑端共用 show_moyu。 */
+    public boolean showSlip() {
+        return b(SHOW_SLIP, 1);
     }
 
     public boolean sound() {

@@ -33,6 +33,10 @@ keystore.properties
 build/win/
 build/tmp/
 build/pyi*/
+# PyInstaller 按 --name 建目录，名字一改就漏；这里逐个列
+build/GrillMe/
+build/GrillMe-trim/
+build/GrillDir/
 *.spec
 
 # 编辑器

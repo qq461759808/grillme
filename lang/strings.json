@@ -519,6 +519,18 @@
       "ja": "何回目から警告",
       "ru": "Предупреждать после N повторов"
     },
+    "set_show_moyu": {
+      "zh": "显示「我承认在摸鱼」",
+      "en": "Show “I admit I'm slacking”",
+      "ja": "「サボってました」を表示",
+      "ru": "Показывать «Признаю, я балду гоняю»"
+    },
+    "set_show_moyu_hint": {
+      "zh": "关掉之后只剩「说清楚了，继续」一条路。",
+      "en": "Turn it off and the only way out is explaining yourself.",
+      "ja": "オフにすると「説明したので続ける」しか出口がなくなります。",
+      "ru": "Выключите — и останется один выход: объяснить, чем заняты."
+    },
     "group_alert": {
       "zh": "提醒方式",
       "en": "How to alert",
@@ -1088,6 +1100,12 @@
       "en": "Blocks paste. Otherwise you can copy a paragraph from elsewhere and it counts as an answer.",
       "ja": "貼り付けを禁止します。そうしないと他所から文章をコピーして貼るだけで通ってしまいます。",
       "ru": "Запрещает вставку. Иначе можно скопировать абзац откуда-то, и это сойдёт за ответ."
+    },
+    "help_show_moyu": {
+      "zh": "弹窗上那个「我承认在摸鱼」的按钮。留着它是给自己留台阶；关掉之后就必须写出你在做什么才能走。",
+      "en": "The “I admit I'm slacking” button on the popup. Leaving it on gives you an easy way out; turning it off means you must say what you're doing to get through.",
+      "ja": "ポップアップの「サボってました」ボタン。残しておくと逃げ道になります。オフにすれば、何をしているかを書かないと抜けられません。",
+      "ru": "Кнопка «Признаю, я балду гоняю» во всплывающем окне. Оставите — будет лазейка; выключите — придётся написать, чем заняты."
     },
     "help_cooldown": {
       "zh": "放行之后多少秒内不再打断。给「刚回答完、手头这件事还得收个尾」留个缓冲。填 0 就是立刻重新计时。",

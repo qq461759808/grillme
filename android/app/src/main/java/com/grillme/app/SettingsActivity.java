@@ -92,6 +92,9 @@ public class SettingsActivity extends Activity {
         Ui.addDivider(answer);
         answer.addView(cooldownRow());
         Ui.addDivider(answer);
+        answer.addView(switchRow(Lang.t("set_show_moyu"), Lang.t("set_show_moyu_hint"),
+                cfg.showSlip(), Cfg.SHOW_SLIP, help("show_moyu")));
+        Ui.addDivider(answer);
         answer.addView(stepperRow(Lang.t("set_repeat_warn"), null,
                 cfg.repeatWarn(), 1, 0, 10, Cfg.REPEAT_WARN, "times", help("repeat_warn")));
         root.addView(answer);

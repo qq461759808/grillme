@@ -62,6 +62,7 @@ DATA_DIR = _resolve_data_dir()
 CFG_PATH = os.path.join(DATA_DIR, "config.json")
 LOG_PATH = os.path.join(DATA_DIR, "log.jsonl")
 STATE_PATH = os.path.join(DATA_DIR, "state.json")
+WAKE_PATH = os.path.join(DATA_DIR, "wake.flag")
 ERR_PATH = os.path.join(DATA_DIR, "error.log")
 SYNC_PATH = os.path.join(DATA_DIR, "sync.json")
 SHOTS_DIR = os.path.join(DATA_DIR, "shots")
@@ -103,6 +104,8 @@ DEFAULTS = {
     "allow_repeat": 1,
     "block_paste": 1,
     "cooldown_seconds": 3.0,
+    # 弹窗
+    "show_moyu": 1,
     # 提醒
     "sound": 1,
     "sound_uri": "beep",
@@ -142,7 +145,11 @@ def ensure_dirs():
 
 def load_json(path, fallback):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # utf-8-sig 而不是 utf-8：PowerShell 的 Set-Content -Encoding UTF8、
+        # 记事本「另存为 UTF-8」都会在开头塞一个 BOM，而 json.load 见到 BOM
+        # 直接抛，于是整个配置被当成空文件读回来——所有设置静默回默认值。
+        # 这个坑是实测踩到的：用 PowerShell 改了一下 show_moyu，配置全没了。
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception:
         return fallback
@@ -205,7 +212,9 @@ def read_log():
 
     rows = []
     try:
-        with open(LOG_PATH, "r", encoding="utf-8") as f:
+        # 同 load_json：容忍 BOM。log.jsonl 被别的工具加过 BOM 的话，
+        # 用 utf-8 读会连第一条都解析不出来。
+        with open(LOG_PATH, "r", encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -1114,7 +1123,9 @@ class AskPopup:
             font=(FONT, 10), relief="flat", bd=0, cursor="hand2",
             padx=16, pady=9,
         )
-        if not self.tip:
+        # 起身提醒那类弹窗本来就没有这个按钮；设置里也能关掉。
+        # 关掉之后「承认摸鱼」这条路走不通，但弹窗本身照旧——它只是少一个出口。
+        if not self.tip and int(app.cfg.get("show_moyu", 1)):
             self.moyu_btn.pack(side="left", padx=(10, 0))
 
         self.counter = tk.Label(
@@ -1150,11 +1161,12 @@ class AskPopup:
 
     def _subtitle(self):
         n = self.app.day_count + 1
+        s = self.app.session_seconds()
+        # 刚打开就手动点「立刻问我一次」时 s 是 0，说「已经连续用了 0 秒」很傻
+        span = fmt_span(s) if s >= 60 else "不到一分钟"
         if self.reason in ("long", "rest"):
-            span = fmt_span(self.app.session_seconds())
             return f"你已经连续用了 {span} · 今天第 {n} 次"
-        span = fmt_span(self.app.session_seconds())
-        return f"今天第 {n} 次 · 这一轮已经连续用了 {span}"
+        return f"今天第 {n} 次 · 已经连续用了 {span}"
 
     def _hint_text(self):
         if self.reason == "rest":
@@ -1243,7 +1255,16 @@ class AskPopup:
 # ---------------------------------------------------------------- 状态小条
 
 class Pill:
+    """
+    右下角那条状态小条。
+
+    能收成一个小圆点——不是隐藏。隐藏起来用户就找不到了，转头又双击一次 exe，
+    于是两个实例并排跑（这正是"两条时间线"的老毛病）。缩成圆点，位置还在
+    右下角，一眼能看见，点一下就展开。
+    """
+
     W, H = 214, 40
+    MINI = 40
 
     def __init__(self, app):
         self.app = app
@@ -1255,7 +1276,12 @@ class Pill:
         w.configure(bg=EDGE)
 
         sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
-        w.geometry(f"{self.W}x{self.H}+{sw - self.W - 26}+{sh - self.H - 74}")
+        # 记右边缘和下边缘，而不是左上角：展开/收起时宽高会变，
+        # 按右下角对齐，小条才不会一边缩一边跳。
+        self._right = sw - 26
+        self._bottom = sh - 74
+        self.collapsed = False
+        w.geometry(f"{self.W}x{self.H}+{self._right - self.W}+{self._bottom - self.H}")
 
         outer = tk.Frame(w, bg=BG)
         outer.pack(fill="both", expand=True, padx=1, pady=1)
@@ -1268,12 +1294,61 @@ class Pill:
         )
         self.lbl.pack(side="left", padx=(7, 0), fill="x", expand=True)
 
+        self.mini = tk.Label(outer, text="●", fg=OK, bg=BG, font=(FONT, 15))
+
         self._drag = None
         self._moved = False
         bind_tree(w, "<Button-1>", self._press)
         bind_tree(w, "<B1-Motion>", self._drag_move)
         bind_tree(w, "<ButtonRelease-1>", self._release)
         bind_tree(w, "<Button-3>", self._menu)
+
+    def _apply(self):
+        w, h = (self.MINI, self.MINI) if self.collapsed else (self.W, self.H)
+        try:
+            self.win.geometry(f"{w}x{h}+{self._right - w}+{self._bottom - h}")
+            self.win.lift()
+        except Exception:
+            log_error(traceback.format_exc())
+
+    def collapse(self):
+        if self.collapsed:
+            return
+        self.collapsed = True
+        self.dot.pack_forget()
+        self.lbl.pack_forget()
+        self.mini.pack(expand=True)
+        self._apply()
+
+    def expand(self):
+        if not self.collapsed:
+            return
+        self.collapsed = False
+        self.mini.pack_forget()
+        self.dot.pack(side="left", padx=(12, 0))
+        self.lbl.pack(side="left", padx=(7, 0), fill="x", expand=True)
+        self._apply()
+
+    def toggle(self):
+        if self.collapsed:
+            self.expand()
+        else:
+            self.collapse()
+
+    def flash(self, times=3):
+        """闪几下边框。用户多半是没找到这条才又双击了一次 exe，得给点动静。"""
+        def step(i):
+            try:
+                if not self.win.winfo_exists():
+                    return
+                if i >= times * 2:
+                    self.win.configure(bg=EDGE)
+                    return
+                self.win.configure(bg=ACCENT if i % 2 == 0 else EDGE)
+                self.win.after(180, lambda: step(i + 1))
+            except Exception:
+                pass
+        step(0)
 
     def _press(self, e):
         self._drag = (e.x_root - self.win.winfo_x(), e.y_root - self.win.winfo_y())
@@ -1283,11 +1358,18 @@ class Pill:
         if not self._drag:
             return
         self._moved = True
-        self.win.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
+        x = e.x_root - self._drag[0]
+        y = e.y_root - self._drag[1]
+        self.win.geometry(f"+{x}+{y}")
+        self._right = x + self.win.winfo_width()
+        self._bottom = y + self.win.winfo_height()
 
     def _release(self, _=None):
         if not self._moved:
-            self.app.open_history()
+            if self.collapsed:
+                self.expand()
+            else:
+                self.app.open_history()
         self._drag = None
 
     def _menu(self, e):
@@ -1306,6 +1388,7 @@ class Pill:
         m.add_command(label="今天不再提醒", command=lambda: self.app.pause_until_tomorrow())
         m.add_command(label="立刻恢复", command=lambda: self.app.pause(0))
         m.add_separator()
+        m.add_command(label="展开" if self.collapsed else "收成小圆点", command=self.toggle)
         m.add_command(label="设置", command=self.app.open_settings)
         m.add_command(label="退出", command=self.app.quit)
         try:
@@ -1319,8 +1402,117 @@ class Pill:
                 return
             self.lbl.config(text=text)
             self.dot.config(fg=color)
+            self.mini.config(fg=color)
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------- 开机自启
+
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_NAME = "Grill"
+
+
+def autostart_target():
+    """注册表里该写什么。打包后就是 exe 自己；跑源码就用 pythonw 带脚本路径。"""
+    if getattr(sys, "frozen", False):
+        return '"%s"' % sys.executable
+    exe = sys.executable or "python.exe"
+    pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    if os.path.exists(pyw):
+        # 用 pythonw 而不是 python：开机时别给用户弹一个黑窗口
+        exe = pyw
+    return '"%s" "%s"' % (exe, os.path.abspath(__file__))
+
+
+def autostart_get():
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+            v, _ = winreg.QueryValueEx(k, AUTOSTART_NAME)
+            return str(v)
+    except Exception:
+        return ""
+
+
+def autostart_set(on):
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0,
+                            winreg.KEY_SET_VALUE) as k:
+            if on:
+                winreg.SetValueEx(k, AUTOSTART_NAME, 0, winreg.REG_SZ,
+                                  autostart_target())
+            else:
+                try:
+                    winreg.DeleteValue(k, AUTOSTART_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception:
+        log_error(traceback.format_exc())
+        return False
+
+
+def _cmd_exe_path(cmd):
+    cmd = (cmd or "").strip()
+    if cmd.startswith('"'):
+        return cmd[1:].split('"', 1)[0]
+    return cmd.split(" ")[0]
+
+
+# ---------------------------------------------------------------- 单实例
+
+_MUTEX = None
+_K32 = None
+
+
+def _kernel32():
+    """use_last_error=True 的 kernel32。
+
+    普通 ctypes.windll 拿不到可靠的 GetLastError——中间的 ctypes 调用会把错误码
+    冲掉，CreateMutexW 明明说"已存在"，GetLastError 却返回 0。
+    """
+    global _K32
+    if _K32 is None:
+        _K32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        _K32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL,
+                                      wintypes.LPCWSTR]
+        _K32.CreateMutexW.restype = wintypes.HANDLE
+    return _K32
+
+
+def poke_existing():
+    """
+    第二个实例被拦下时，给正在跑的那个留个记号，让它把悬浮条展开。
+
+    为什么不用消息框：无窗口进程里弹的 MessageBox 会被前台窗口盖住，
+    用户照样不知道程序在哪儿；而且它会卡住那个进程直到有人点确定。
+    写个文件、由对方每秒的 tick 自己发现，最省事也最不容易出错。
+    """
+    try:
+        with open(WAKE_PATH, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+        return True
+    except Exception:
+        return False
+
+
+def acquire_single_instance():
+    """
+    只允许跑一个。
+
+    两个实例各跑一套计时、各弹各的窗，还会互相覆盖 state.json——这就是
+    「两条时间线在并行」的真凶：双击了两次 exe（或者开机自启之后又手动点了一次）。
+    两套药丸还都停在右下角同一组坐标上，重叠成一个，看着完全不像有两个进程。
+    """
+    global _MUTEX
+    try:
+        k = _kernel32()
+        _MUTEX = k.CreateMutexW(None, False, "Local\\GrillMe.SingleInstance")
+        return ctypes.get_last_error() != 183      # ERROR_ALREADY_EXISTS
+    except Exception:
+        return True                                # 拿不到锁就照常跑，别把程序拦死
 
 
 # ---------------------------------------------------------------- 主程序
@@ -1345,17 +1537,22 @@ class AskMe:
         self.last_answer = ""
         self.last_ts = 0
         self.day = date.today().isoformat()
-        self.active = 0
-        self.since_last = 0
+        # 三个计时量全是"秒数"，只由 tick 里的时间增量喂。以前 active/since_last
+        # 是"每秒 +1"、session_start 是时间戳，两套账在弹窗停留、系统睡眠、
+        # 重启恢复时都会各走各的——看起来就像有两条时间线在并行。现在统一成一条。
+        self.active = 0.0
+        self.since_last = 0.0
+        self.session_secs = 0.0
         self.next_due = int(self.cfg["first_minutes"]) * 60
+        self._last_tick = time.monotonic()
         self.day_count = 0
         self._ticks = 0
-        self.session_start = None
         self.long_alerted = False
         self.pending = None
         self.off_screen_since = None
         self.usage = Usage()
         self._last_usage_save = 0
+        self._usage_acc = 0.0
         self._cleanup_done = False
 
         self._restore_state()
@@ -1369,23 +1566,33 @@ class AskMe:
             self._cleanup_done = True
         except Exception:
             log_error(traceback.format_exc())
+        # 开机自启存的是绝对路径。exe 被挪了地方，注册表里那条就成死链，
+        # 下次开机"什么也没发生"。只在旧路径确实不存在时才改——不然用户临时
+        # 换个位置试一下，就把真正的那条覆盖了。
+        try:
+            cur = autostart_get()
+            if cur and cur != autostart_target():
+                old = _cmd_exe_path(cur)
+                if old and not os.path.exists(old):
+                    autostart_set(True)
+        except Exception:
+            log_error(traceback.format_exc())
 
     # ---------------- 状态存取
 
     def _restore_state(self):
         st = load_json(STATE_PATH, {})
         if st.get("day") == self.day:
-            self.active = int(st.get("active", 0))
-            self.since_last = int(st.get("since_last", 0))
-            nd = int(st.get("next_due", 0) or 0)
+            self.active = max(0.0, float(st.get("active", 0) or 0))
+            self.since_last = max(0.0, float(st.get("since_last", 0) or 0))
+            nd = float(st.get("next_due", 0) or 0)
             if nd > 0:
                 self.next_due = nd
-            ss = st.get("session_start")
-            if ss:
-                try:
-                    self.session_start = float(ss)
-                except Exception:
-                    pass
+            # 「这一轮连续用了多久」只在真的没断过的时候才延续。
+            # 关机一夜再开机还接着算，就会显示「这一轮 11 小时」——比归零更假。
+            saved_at = float(st.get("saved_at", 0) or 0)
+            if saved_at and time.time() - saved_at <= 120:
+                self.session_secs = max(0.0, float(st.get("session_secs", 0) or 0))
             self.long_alerted = bool(st.get("long_alerted", False))
         recs = [r for r in read_log() if r.get("day") == self.day]
         self.day_count = len(recs)
@@ -1396,17 +1603,16 @@ class AskMe:
     def _save_state(self):
         save_json(STATE_PATH, {
             "day": self.day,
-            "active": self.active,
-            "since_last": self.since_last,
+            "active": round(self.active, 1),
+            "since_last": round(self.since_last, 1),
+            "session_secs": round(self.session_secs, 1),
+            "saved_at": time.time(),
             "next_due": self.next_due,
-            "session_start": self.session_start,
             "long_alerted": self.long_alerted,
         })
 
     def session_seconds(self):
-        if self.session_start:
-            return max(0, time.time() - self.session_start)
-        return max(0, self.active)
+        return int(max(0.0, self.session_secs))
 
     # ---------------- 主循环
 
@@ -1425,8 +1631,9 @@ class AskMe:
         except Exception:
             pass
 
-    def _decide(self, now):
-        """返回 (in_use, 状态标签, 颜色)。"""
+    def _decide(self, now, locked=None):
+        """返回 (in_use, 状态标签, 颜色)。locked 由调用方算好传进来——
+        同一 tick 里查两次锁屏状态，中间正好解锁的话两次结果会打架。"""
         if not int(self.cfg.get("enabled", 1)):
             return False, "已关闭", FAINT
         if now < float(self.cfg.get("paused_until", 0) or 0):
@@ -1435,7 +1642,8 @@ class AskMe:
         if in_dnd(self.cfg):
             return False, "免打扰时段", FAINT
 
-        locked = is_locked()
+        if locked is None:
+            locked = is_locked()
         if not locked:
             self.off_screen_since = None
             if not int(self.cfg.get("idle_stop_enabled", 1)):
@@ -1459,11 +1667,21 @@ class AskMe:
 
     def _tick_once(self):
         now = time.time()
+        # 时间增量取单调时钟：系统改时间、夏令时、对时都不该影响计时。
+        # 上限 5 秒是为了吃掉两种异常——机器睡了一觉（after 停了几小时才回来），
+        # 或者被挂起卡了很久。那段时间人不在，算进"在用"就是把账做假了。
+        mono = time.monotonic()
+        dt = mono - self._last_tick
+        self._last_tick = mono
+        if dt < 0 or dt > 5:
+            dt = 0.0
+
         today = date.today().isoformat()
         if today != self.day:
             self.day = today
-            self.active = 0
-            self.since_last = 0
+            self.active = 0.0
+            self.since_last = 0.0
+            self.session_secs = 0.0
             self.day_count = 0
             self.long_alerted = False
             self.next_due = int(self.cfg["first_minutes"]) * 60
@@ -1472,17 +1690,23 @@ class AskMe:
                 cleanup_shots(self.cfg.get("shot_keep_days", 30))
 
         was_locked = self._was_locked
-        in_use, label, color = self._decide(now)
         locked = is_locked()
+        in_use, label, color = self._decide(now, locked)
 
         if in_use and self.popup is None:
-            self.active += 1
-            self.since_last += 1
-            if self.session_start is None:
-                self.session_start = now
-            self._sample_usage()
+            self.active += dt
+            self.since_last += dt
+            self.session_secs += dt
+            # 按程序统计也走同一个增量：攒够 1 秒才记一笔，免得 0.98 秒被
+            # 记成 1 秒、一秒一秒攒出几十分钟的假时长。
+            self._usage_acc += dt
+            if self._usage_acc >= 1.0:
+                n = int(self._usage_acc)
+                self._usage_acc -= n
+                self._sample_usage(n)
         elif not in_use:
-            self.session_start = None
+            self.session_secs = 0.0
+            self._usage_acc = 0.0
             self.long_alerted = False
 
         if self.usage.dirty and now - self._last_usage_save >= 60:
@@ -1509,8 +1733,7 @@ class AskMe:
         # 连续使用太久
         if (in_use and not self.long_alerted
                 and int(self.cfg.get("long_session_alert", 0))
-                and self.session_start
-                and now - self.session_start >= float(self.cfg.get("long_session_minutes", 180)) * 60
+                and self.session_secs >= float(self.cfg.get("long_session_minutes", 180)) * 60
                 and self.popup is None):
             self.long_alerted = True
             if locked:
@@ -1525,6 +1748,15 @@ class AskMe:
         if self._ticks % 30 == 0:
             self._save_state()
 
+        # 有人双击了第二次 exe：把他叫回来，把悬浮条亮出来。
+        if os.path.exists(WAKE_PATH):
+            try:
+                os.remove(WAKE_PATH)
+            except OSError:
+                pass
+            self.pill.expand()
+            self.pill.flash()
+
         self._refresh_pill(in_use, label, color)
 
     _was_locked = False
@@ -1538,15 +1770,17 @@ class AskMe:
             return
         used = self.session_seconds()
         tail = fmt_span(used) if used >= 60 else "刚开始"
-        self.pill.set_state(f"在计时 · 这一轮 {tail}", color)
+        # 说「连续在用」而不是「这一轮」：后者容易被读成"距下次提问还剩多久"，
+        # 而那个数字是故意不显示的（见 DEVELOPING.md §11）。
+        self.pill.set_state(f"连续在用 {tail}", color)
 
     def _roll_next(self):
         lo = int(self.cfg["min_minutes"]) * 60
         hi = max(lo + 60, int(self.cfg["max_minutes"]) * 60)
         self.next_due = random.randint(lo, hi)
-        self.since_last = 0
+        self.since_last = 0.0
 
-    def _sample_usage(self):
+    def _sample_usage(self, sec=1):
         if not int(self.cfg.get("track_app", 1)):
             return
         try:
@@ -1555,7 +1789,7 @@ class AskMe:
                 return
             if not int(self.cfg.get("track_titles", 1)):
                 title = ""
-            self.usage.add(app, title[:120], 1)
+            self.usage.add(app, title[:120], max(1, int(sec)))
         except Exception:
             log_error(traceback.format_exc())
 
@@ -1589,7 +1823,7 @@ class AskMe:
             "day": date.today().isoformat(),
             "answer": text,
             "kind": kind,
-            "active": self.active,
+            "active": int(self.active),
             "span": int(self.since_last),
             "n": self.day_count,
             "delay": delay,
@@ -2293,6 +2527,7 @@ class SettingsWindow:
         self.sf = ScrollFrame(w, bg=BG)
         self.sf.pack(fill="both", expand=True)
         self.vars = {}
+        self.sysvars = {}
         self._build(self.sf.inner)
         w.after(120, lambda: force_foreground(w))
 
@@ -2324,6 +2559,14 @@ class SettingsWindow:
         row = self._row(parent, label, desc)
         var = tk.IntVar(value=int(self.app.cfg.get(key, DEFAULTS[key])))
         self.vars[key] = ("bool", var)
+        Switch(row, var, bg=BG).pack(side="right", padx=(12, 0), pady=(2, 0))
+
+    def _sys_bool(self, parent, label, desc, getter, setter):
+        """开关的状态不在 config.json 里，而在别处（比如注册表）。
+        点「保存」才落盘，跟其它项一致——点了取消就什么都不改。"""
+        row = self._row(parent, label, desc)
+        var = tk.IntVar(value=1 if getter() else 0)
+        self.sysvars[label] = (var, setter)
         Switch(row, var, bg=BG).pack(side="right", padx=(12, 0), pady=(2, 0))
 
     def _num(self, parent, key, label, desc="", width=8, suffix="", is_float=False):
@@ -2371,6 +2614,12 @@ class SettingsWindow:
         self._section(p, "总开关", "关掉之后完全不计时、不提醒。想临时歇一会儿用悬浮条右键的「暂停」。")
         self._bool(p, "enabled", "开启提醒", "总开关。等于「是否弹窗」——弹窗是这个工具唯一的入口。")
 
+        self._section(p, "启动与常驻",
+                      "程序没有主窗口，界面上只有右下角那条。不想要那条就收进托盘，它照样计时。")
+        self._sys_bool(p, "开机自启动",
+                       "登录 Windows 后自己开始计时。否则每天开机都得记得手动点一下。",
+                       lambda: bool(autostart_get()), autostart_set)
+
         self._section(p, "节奏", "活跃时间每满一段，随机挑一个时刻问你。不显示倒计时。")
         self._num(p, "min_minutes", "最短间隔", "两次提问之间，活跃时间至少隔多久。", suffix="分钟")
         self._num(p, "max_minutes", "最长间隔", "再久也不会超过这个数。", suffix="分钟")
@@ -2400,6 +2649,8 @@ class SettingsWindow:
                    "防止把上次的答案复制过来。手打才作数。")
         self._num(p, "cooldown_seconds", "冷静期", "弹出后多少秒才允许提交，可以填 0.5 这种小数。0 = 不等待。",
                   suffix="秒", is_float=True)
+        self._bool(p, "show_moyu", "显示「我承认在摸鱼」",
+                   "关掉之后只剩「说清楚了，继续」一条路。想彻底不给自己留台阶就关掉它。")
 
         self._section(p, "提醒方式", "电脑端没有震动，只有声音。")
         self._bool(p, "sound", "响铃", "")
@@ -2519,6 +2770,18 @@ class SettingsWindow:
         "shot_width": "截图宽度", "shot_quality": "JPEG 质量", "shot_keep_days": "截图保留天数",
     }
 
+    # 每项「程序真的能处理」的边界，和「推荐」分开。
+    # 推荐只是提示，不是围墙：填 999 就存 999，只提醒一句超了。
+    # 绝对边界只有一个作用——别让值大到把程序弄崩（JPEG 编码器不认 101，
+    # 20000 像素宽的 Bitmap 直接分配失败）。夹断了必须说清楚改成了多少，
+    # 不能像以前那样悄悄改掉，用户还以为自己填错了。
+    LIMITS = {
+        # key: (绝对下限, 绝对上限, 推荐下限, 推荐上限, 名字)
+        "shot_width": (1, 10000, 160, 3840, "截图宽度"),
+        "shot_quality": (1, 100, 20, 95, "JPEG 质量"),
+        "cooldown_seconds": (0, 3600, 0, 60, "冷静期"),
+    }
+
     def save(self):
         try:
             new = self._collect()
@@ -2526,6 +2789,18 @@ class SettingsWindow:
             key = str(e)
             messagebox_info(self.win, "不对", f"「{self.LABELS.get(key, key)}」得填数字。")
             return
+
+        notes = []
+        for key, (alo, ahi, rlo, rhi, name) in self.LIMITS.items():
+            v = new[key]
+            if v < alo:
+                new[key] = alo
+            elif v > ahi:
+                new[key] = ahi
+            if new[key] != v:
+                notes.append(f"「{name}」只能是 {alo} – {ahi}，已改成 {new[key]}。")
+            elif not (rlo <= new[key] <= rhi):
+                notes.append(f"「{name}」现在是 {new[key]}，超出推荐 {rlo} – {rhi}。")
 
         errs = []
         if new["min_minutes"] < 1 or new["max_minutes"] < 1:
@@ -2538,16 +2813,10 @@ class SettingsWindow:
             errs.append("无输入判定至少 1 分钟。")
         if new["off_screen_grace_minutes"] < 0:
             errs.append("锁屏宽限不能是负数。")
-        if new["cooldown_seconds"] < 0 or new["cooldown_seconds"] > 60:
-            errs.append("冷静期要在 0 到 60 秒之间。")
         if new["repeat_alert"] <= new["repeat_warn"]:
             errs.append("标红的次数得比标黄大。")
         if new["long_session_minutes"] < 1:
             errs.append("连续使用阈值至少 1 分钟。")
-        if not (160 <= new["shot_width"] <= 3840):
-            errs.append("截图宽度要在 160 到 3840 之间。")
-        if not (20 <= new["shot_quality"] <= 95):
-            errs.append("JPEG 质量要在 20 到 95 之间。")
         if new["shot_keep_days"] < 0:
             errs.append("截图保留天数不能是负数。")
         if new["sync_enabled"] and not new["sync_url"].strip():
@@ -2559,6 +2828,13 @@ class SettingsWindow:
             return
 
         self.app.apply_settings(new)
+        for label, (var, setter) in self.sysvars.items():
+            try:
+                setter(bool(var.get()))
+            except Exception:
+                log_error(traceback.format_exc())
+        if notes:
+            messagebox_info(self.win, "已保存", "\n".join(notes))
         self.close()
 
     def reset(self):
@@ -2571,6 +2847,8 @@ class SettingsWindow:
                 var.set(int(DEFAULTS[key]))
             else:
                 var.set(str(DEFAULTS[key]))
+        for label, (var, _setter) in self.sysvars.items():
+            var.set(0)
 
     def close(self):
         try:
@@ -2716,6 +2994,12 @@ def main():
             pass
 
     sys.excepthook = hook
+
+    if not acquire_single_instance():
+        # 已经有实例在跑。第二个实例绝对不能开始计时——两套计时同时写
+        # state.json，就是"两条时间线"的来源。叫它把悬浮条展开，让人看见。
+        poke_existing()
+        return
 
     app = AskMe()
     if "--demo" in sys.argv:

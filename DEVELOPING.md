@@ -7,10 +7,18 @@
 
 ## 0. 一句话现状
 
-两端都已完成并发布在 https://github.com/qq461759808/grillme （tag `v1.0.0`）：
-电脑端是单文件 Python（`grill.py`，约 2700 行）+ PyInstaller 打的 exe；
+两端都已完成并发布在 https://github.com/qq461759808/grillme （`v1.1.0`，`v1.0.0` 是首个版本）：
+电脑端是单文件 Python（`grill.py`，约 3000 行）+ PyInstaller 打的 exe；
 安卓端是纯 Java（15 个文件，无 AndroidX、无 Kotlin、无第三方库）。
-四语言词表在 `lang/strings.json`，200 条 × zh/en/ja/ru。
+四语言词表在 `lang/strings.json`，203 条 × zh/en/ja/ru。
+
+1.1.0 相比 1.0.0 的三处变化（都记在 §6）：
+
+- **单实例锁**——1.0.0 没有，双击两次 exe 就会出现两个进程各跑一套计时，
+  也就是用户报的「两条时间线在并行」（§6.14）。
+- **计时改成单调时钟增量**，不再「每次 tick 加 1」+「时间戳相减」两套账（§6.15）。
+- **小条能收成右下角一个小圆点**，设置里能关掉「我承认在摸鱼」，
+  电脑端新增开机自启动。
 
 ---
 
@@ -49,12 +57,12 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 
 ## 3. 电脑端 `grill.py`
 
-单文件约 2700 行，只依赖标准库（**没有第三方包，这是刻意的**，见 §8）。按段落分：
+单文件约 3000 行，只依赖标准库（**没有第三方包，这是刻意的**，见 §8）。按段落分：
 
 | 段落 | 职责 |
 |---|---|
 | `_resolve_data_dir()` / `ensure_dirs()` | 数据目录，`%APPDATA%\Grill`（旧名 `AskMe` 会自动搬过来） |
-| `load_json` / `save_json` / `append_log` / `read_log` | 配置、状态、记录读写 |
+| `load_json` / `save_json` / `append_log` / `read_log` | 配置、状态、记录读写。**读一律 `utf-8-sig`**（§6.16） |
 | `parse_hhmm` / `in_dnd` / `fmt_span` / `fmt_ago` | 时间工具 |
 | `LASTINPUTINFO` / `idle_seconds` / `is_locked` / `is_fullscreen` | **Win32 状态探测**，ctypes 直调 user32 |
 | `beep` | 响铃 |
@@ -64,7 +72,9 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 | `webdav_test` / `pick_rest_tip` | 同步与文案 |
 | `Switch` / `ScrollFrame` / `PromptText` / `button` | 手写的 tkinter 小控件 |
 | `AskPopup` | 质问弹窗 |
-| `Pill` | 右下角悬浮小条 |
+| `Pill` | 右下角小条，能收成 40×40 的小圆点（`collapse()` / `expand()` / `flash()`） |
+| `autostart_target` / `autostart_get` / `autostart_set` | 开机自启，写 `HKCU\...\Run` |
+| `acquire_single_instance` / `poke_existing` | **单实例锁**（§6.14） |
 | `AskMe` | 主程序：`tick()` 每秒跑一次 |
 | `selftest()` / `main()` | 入口 |
 
@@ -72,12 +82,17 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 调 `_tick_once()` 判定状态。异常被 `try/except` 包住并写 `error.log`，
 **保证 tick 自己不会断**（断了就再也不会弹窗了）。
 
+`_tick_once()` 开头先算 `dt = time.monotonic() - self._last_tick`，
+`active` / `since_last` / `session_secs` 三个量都加这一个 `dt`——
+**不要改回「每秒 +1」**，见 §6.15。
+
 数据文件（`%APPDATA%\Grill\`）：
 
 | 文件 | 内容 |
 |---|---|
 | `config.json` | 设置项 |
-| `state.json` | 计时状态：`day` / `active` / `since_last` / `next_due` |
+| `state.json` | 计时状态：`day` / `active` / `since_last` / `session_secs` / `saved_at` / `next_due` |
+| `wake.flag` | 第二个实例留下的记号，第一个实例 tick 发现后展开小条并删掉它 |
 | `log.jsonl` | 一条一行，字段见下 |
 | `usage/*.json` | 按应用累计 |
 | `shots/*.jpg` | 弹窗前的截图 + `thumbs/` 缩略图 |
@@ -274,6 +289,72 @@ GBK 编不出来，`print` 直接抛。
   `dumpsys activity activities | grep topResumedActivity`。
 - **`View.getDefaultSize()` 陷阱**：裸 `View` 在 `AT_MOST` 下 `wrap_content` 返回整个可用高度。
 
+### 6.14 「两条时间线在并行」——真凶是两个实例
+
+**症状**：右下角小条显示的时长和弹窗的节奏对不上；偶尔同一时刻弹出两个窗；
+记录的 `active`/`span` 数值互相矛盾。
+
+**根因**：1.0.0 没有单实例锁。双击两次 exe（或者开机自启之后又手动点了一次），
+就有两个进程各跑一套计时、各弹各的窗、互相覆盖 `state.json`。
+**两条小条还停在完全相同的坐标上，重叠成一个**，所以看着完全不像有两个进程——
+这是最容易被误判成"计时逻辑有 bug"的地方。
+
+**修法**：`acquire_single_instance()` 用命名 mutex（`Local\GrillMe.SingleInstance`）。
+必须用 `ctypes.WinDLL("kernel32", use_last_error=True)` + `ctypes.get_last_error()`——
+普通 `ctypes.windll` 拿不到可靠错误码，中间的 ctypes 调用会把 last error 冲掉，
+`CreateMutexW` 明明说"已存在"，`GetLastError()` 却返回 0。
+
+第二个实例**不弹消息框**：无窗口进程里的 MessageBox 会被前台窗口盖住，
+而且会卡住那个进程直到有人点确定。改成写 `wake.flag`，
+第一个实例在每秒的 tick 里发现它就展开小条并闪边框（`Pill.flash()`）。
+
+### 6.15 `since_last` 和 `session_start` 是两套账
+
+**症状**：小条说「连续用了 3 小时」，弹窗却说「已经连续用了 5 分钟」；
+系统睡眠唤醒后数字猛跳一大截。
+
+**根因**：`active`/`since_last` 靠「每次 tick 加 1」，暗含"after 恰好 1 秒"；
+`session_start` 是时间戳，用 `now - session_start` 算。两者在三种情况下必然分叉：
+
+1. 弹窗开着时 `since_last` 不涨（对），但 `session_start` 在走；
+2. 系统睡眠时 `after` 不触发，`since_last` 停住，时间戳照样往前走；
+3. `session_start` 存进了 `state.json`，重启后连关机那段时间也算进"这一轮"。
+
+**修法**：全部改成**单调时钟增量**——`dt = time.monotonic() - last_tick`，
+三个量（`active` / `since_last` / `session_secs`）加同一个 `dt`。
+`dt > 5` 秒视为机器睡过或被挂起，直接丢弃（那段时间人不在，算进去就是把账做假）。
+`session_secs` 落盘时带 `saved_at`，重启间隔超过 120 秒就归零——"连续"确实断了。
+
+### 6.16 配置文件被加上 BOM 之后，所有设置静默回默认
+
+**症状**：用 PowerShell / 记事本改了一下 `config.json`，再打开程序，设置全变默认了。
+
+**根因**：`Set-Content -Encoding UTF8`（PowerShell 5.1）和记事本「另存为 UTF-8」
+都会在文件开头写 `EF BB BF`。`json.load` 见到 BOM 直接抛
+`Unexpected UTF-8 BOM`，`load_json` 于是返回 fallback `{}`，
+`load_cfg` 拿 `DEFAULTS` 补全——**用户看不到任何报错，配置就这么没了**。
+
+**修法**：读 JSON 一律 `encoding="utf-8-sig"`（`load_json` 和 `read_log` 都改了）。
+`save_json` 仍然写不带 BOM 的 UTF-8。
+
+### 6.17 想加系统托盘图标的话，先看这条
+
+这条是给"下次又想把小条塞进托盘"的人看的。
+
+**ctypes 回调里 LPARAM 会溢出**：`DefWindowProcW` / `PostMessageW` 不声明 `argtypes` 时，
+ctypes 默认把参数当 32 位 `int`，64 位下 LPARAM 一超过 2^31 就抛 `OverflowError`。
+而且异常是在**窗口过程里**抛的，无窗口 exe 连日志都看不到，表现就是"点了没反应"。
+所有 `HWND` / `LPARAM` / `WPARAM` / `HINSTANCE` 参数都必须显式声明。
+
+**更要命的是 Win11 的行为**：`Shell_NotifyIconW(NIM_ADD)` 返回成功、
+`Shell_NotifyIconGetRect` 也能查到矩形，但图标**不会**出现在任务栏或 `^` 溢出面板里，
+必须由用户去「设置 → 个性化 → 任务栏 → 其他系统托盘图标」手动打开。
+所以最后没走托盘：改成「小条缩成右下角一个小圆点」（`Pill.collapse()`），
+不依赖 Explorer、位置永远在右下角、点了就展开。
+
+如果哪天真的要做托盘，`TaskbarCreated` 那条消息必须处理
+（`RegisterWindowMessageW("TaskbarCreated")`），否则资源管理器重启一次图标就永久消失。
+
 ---
 
 ## 7. 构建与发布
@@ -393,6 +474,13 @@ adb shell dumpsys gfxinfo com.grillme.app        # 看是否空转重绘
 - **安卓没有"无输入"判定**（系统不给全局最后输入时间），"屏幕亮着就算在用"。
 - **全屏判定只认主屏**，副屏全屏播放会被判成"离开"。
 - 电脑端 `shots/` 的清理按 `shot_keep_days`，默认 0（不清理），长期会攒大。
+- **1.1.0 的安卓改动只过了编译，没上真机**：`Cfg.SHOW_SLIP` + `GrillOverlay` 隐藏
+  「我承认在摸鱼」+ 设置页那一行。逻辑就三行，但"开关关掉后按钮真的不占位"
+  这件事只有真机看得出来（`LinearLayout` 里 GONE 的 view 不参与 measure，
+  所以 `passBtn` 的 weight 从 1.2 改成 1 是多余的保险，不影响布局）。
+- **安卓 `sinceLast` 还是「每秒 +1」**（`GrillService` 里 `sinceLast++`），
+  和电脑端 §6.15 那个问题同源，只是安卓没有 `sessionStart` 时间戳并行，
+  而且服务 tick 用的是 `Handler` 定时，漂得没那么明显。要彻底对齐得改成增量记账。
 
 ---
 
@@ -401,8 +489,12 @@ adb shell dumpsys gfxinfo com.grillme.app        # 看是否空转重绘
 这些是刻意的设计，看起来像缺陷，其实不是：
 
 - **不显示「距下次提问还有多久」**——会让人盯着倒计时等，甚至提前把答案演一遍。
+  小条上那个「连续在用 X」是**已经用了多久**，不是倒计时，措辞别改回去。
 - **不做 App 白名单**（"用 Excel 时不弹"）——"在用 Excel"不等于"在工作"，那是给自己开后门。
 - **弹窗没有关闭按钮**——能关就等于能跳过，整个机制就废了。
 - **不做 AI 分析回答**——要联网、要花钱，违背"离线可用"。
 - **电脑端不引第三方包**——只用标准库，所以截图手写 GDI+、HTTP 手写 WebDAV。
   想引 PIL/requests 之前先想清楚：这会毁掉"解压即用、不装依赖"这个前提。
+- **小条「收起」是缩成小圆点，不是隐藏**——藏起来用户就找不到，
+  转头会再双击一次 exe，然后又变成两个实例（§6.14）。
+- **单实例锁不能去掉**——见 §6.14，去掉就等于把"两条时间线"放回来。
