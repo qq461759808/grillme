@@ -73,18 +73,33 @@
 
 ## 快速开始
 
+### 方式一：直接下 exe（不用装 Python）
+
+`grillme-1.0.0-win64.zip` 解压到任意目录，双击 `GrillMe.exe`。约 13 MB，Windows 10 / 11 64 位通用。
+
+**只有 64 位版本**，没有 32 位。原因：Windows 11 只有 64 位，Windows 10 的 32 位版本已经在 2025 年 10 月停止支持；而且这个程序要靠 `ctypes` 调 `user32` / `gdi32`，64 位下句柄和指针都不用截断，少一类说不清的坑。如果你的机器确实是 32 位系统，按下面的方式二跑源码——`python grill.py` 在 32 位 Python 上一样能跑。
+
+第一次运行不会立刻弹窗，默认 25 分钟后才可能第一次问你。想马上看效果：
+右键右下角的悬浮条 → **立刻问我一次**。
+
+exe 带控制台参数，双击看不到输出时用它们排障（在 cmd 里跑）：
+
+```bat
+GrillMe.exe --demo        :: 启动后立刻弹一次
+GrillMe.exe --selftest    :: 只做环境自检，不开窗口
+```
+
+### 方式二：跑源码
+
 Windows 10 / 11，Python 3.9 或更高（只用标准库，**不需要安装任何第三方包**）。
 
 ```bat
-git clone https://github.com/<your-name>/grill.git
-cd grill
+git clone https://github.com/qq461759808/grillme.git
+cd grillme
 python grill.py
 ```
 
 也可以直接双击 `启动电脑端.bat`（会用 `pythonw` 静默启动，不留控制台窗口）。
-
-第一次运行不会立刻弹窗，默认 25 分钟后才可能第一次问你。想马上看效果：
-右键右下角的悬浮条 → **立刻问我一次**。
 
 调试用参数：
 
@@ -92,6 +107,17 @@ python grill.py
 python grill.py --demo        :: 启动后立刻弹一次
 python grill.py --selftest    :: 只做环境自检，不开窗口
 ```
+
+自己打 exe（需要 PyInstaller，只是构建工具，跑程序本身不需要它）：
+
+```bat
+pip install pyinstaller
+pyinstaller --noconfirm --clean --onefile --windowed --name GrillMe ^
+  --icon build/res/grill.ico --version-file build/res/version_info.txt grill.py
+```
+
+产物是 `dist/GrillMe.exe`，约 13 MB。`--onefile` 是单文件、启动时自解压到临时目录（实测 0.5 秒）；
+想再快一点可以换 `--onedir`，代价是一堆 DLL 要跟着一起拷。
 
 ## 安卓端
 
@@ -188,6 +214,23 @@ python grill.py --selftest    :: 只做环境自检，不开窗口
 - **不做 AI 分析回答**。要联网、要花钱，还违背"离线可用"这个前提。
 - **不做实时推送、秒级同步**。记录不是协同文档，一天同步三次足够。
 - **不用 Electron**。一个随时在后台盯着你的东西，不该自带 100MB 的浏览器。
+
+## 开销
+
+实测（Windows 11，16 核，Python 3.14 + Tk 9.0，onefile 打包版）：
+
+| 项 | 数值 |
+|---|---|
+| 启动到可用 | 0.5 秒（含 onefile 自解压） |
+| 空闲 CPU | 10 秒内累计 0.094 秒 CPU 时间，约合单核 1% |
+| 内存 | 工作集约 50 MB，私有约 26 MB |
+| 线程 / 句柄 | 10 / 278 |
+
+为什么这么低：主循环每秒醒一次，只调两个 Win32 函数——`GetLastInputInfo` 读最后输入时间、
+`GetForegroundWindow` 读前台窗口，都是微秒级；其余时间阻塞在 Tk 的消息循环里，不占 CPU。
+截图只在真要弹窗之前抓一张，平时完全不碰屏幕。
+
+onefile 版会多一个 11 MB 的 bootloader 父进程，它只负责解压和等子进程，不干活。
 
 ## 已知限制
 

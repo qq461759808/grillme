@@ -2588,6 +2588,14 @@ def messagebox_info(parent, title, text):
 # ---------------------------------------------------------------- 入口
 
 def selftest():
+    # 中文 Windows 的 cmd 默认是 GBK 代码页，而窗口标题里可能带零宽空格
+    # （U+200B）这类 GBK 编不出来的字符，一 print 就抛 UnicodeEncodeError，
+    # 自检跑到一半直接崩。宁可把这种字符显示成问号，也不能让自检挂掉。
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+
     ensure_dirs()
     print(f"数据目录        {DATA_DIR}")
     print(f"配置            {load_cfg()}")
@@ -2634,13 +2642,78 @@ def selftest():
     print("自检完成")
 
 
+def _console_for_selftest():
+    """
+    打包成无控制台的 exe 之后，print 出来的东西没人看得见。
+
+    所以跑 --selftest 时把标准流接回控制台：从 cmd 里调用就挂到那个窗口，
+    双击调用就新开一个。返回 "allocated" 表示是新开的，结束前得停一下，
+    不然窗口一闪就没了。
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    try:
+        k32 = ctypes.windll.kernel32
+        mode = None
+        if k32.AttachConsole(-1):          # ATTACH_PARENT_PROCESS
+            mode = "attached"
+        elif k32.AllocConsole():
+            mode = "allocated"
+        if not mode:
+            return None
+        # 故意不指定 encoding：跟着控制台自己的代码页走（中文系统就是 GBK），
+        # 中文才不会乱码。errors="replace" 是给零宽空格那类字符兜底。
+        sys.stdout = open("CONOUT$", "w", errors="replace", buffering=1)
+        sys.stderr = sys.stdout
+        sys.stdin = open("CONIN$", "r", errors="replace", buffering=1)
+        return mode
+    except Exception:
+        return None
+
+
+def _pause_before_close(seconds=30):
+    """
+    双击启动时新开的那个控制台，得停一下让人看清输出。
+
+    但不能用 input() 死等——在没有键盘的场合（管道、远程会话）它会一直挂着，
+    用户只看到一个不动的窗口，还以为程序坏了。所以改成限时等待按键。
+    """
+    try:
+        import msvcrt
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if msvcrt.kbhit():
+                msvcrt.getch()
+                return
+            time.sleep(0.1)
+    except Exception:
+        pass
+
+
 def main():
     if "--selftest" in sys.argv:
-        selftest()
+        mode = _console_for_selftest()
+        try:
+            selftest()
+        finally:
+            if mode == "allocated":
+                try:
+                    print("\n（30 秒后自动关闭，按任意键立即关闭）")
+                except Exception:
+                    pass
+                _pause_before_close()
         return
 
     def hook(exc_type, exc, tb):
-        log_error("".join(traceback.format_exception(exc_type, exc, tb)))
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        log_error(text)
+        # 无控制台的 exe 崩溃时日志写在 AppData 里，用户根本不会去看。
+        # 弹一个框，至少知道是崩了、崩在哪。
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                None, text[-1200:], "Grill Me 启动失败", 0x10)
+        except Exception:
+            pass
 
     sys.excepthook = hook
 
