@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.grillme.app'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.grillme.app"
+        minSdk 24
+        targetSdk 36
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // 用 debug 签名也能装；发布时用 keystore.properties 里的正式签名覆盖
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // 不用 AndroidX，也不需要 Kotlin
+    buildFeatures {
+        buildConfig true
+    }
+
+    // 四语言词表和电脑端共用同一份文件（仓库根的 lang/strings.json）
+    sourceSets {
+        main {
+            assets.srcDirs += ['../../lang']
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}
+
+// 没有任何第三方依赖：纯 framework + org.json
+dependencies {
+}

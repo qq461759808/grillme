@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 状态栏图标：白底气泡，三个点挖空（evenOdd），跟随系统着色 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M4,3h16a2,2 0 0 1 2,2v10a2,2 0 0 1 -2,2h-7.4l-5.6,4.2v-4.2h-3a2,2 0 0 1 -2,-2v-10a2,2 0 0 1 2,-2zM8,10.6m-1.5,0a1.5,1.5 0 1 0 3,0a1.5,1.5 0 1 0 -3,0zM12,10.6m-1.5,0a1.5,1.5 0 1 0 3,0a1.5,1.5 0 1 0 -3,0zM16,10.6m-1.5,0a1.5,1.5 0 1 0 3,0a1.5,1.5 0 1 0 -3,0z" />
+</vector>

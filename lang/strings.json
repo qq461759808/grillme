@@ -1,0 +1,1033 @@
+{
+  "meta": {
+    "version": 1,
+    "langs": [
+      "zh",
+      "en",
+      "ja",
+      "ru"
+    ],
+    "names": {
+      "zh": "中文",
+      "en": "English",
+      "ja": "日本語",
+      "ru": "Русский"
+    }
+  },
+  "s": {
+    "app_name": {
+      "zh": "质问我 · 监督我",
+      "en": "Grill Me",
+      "ja": "問い詰めて",
+      "ru": "Допроси меня"
+    },
+    "tagline": {
+      "zh": "走神的那一刻，程序会拦住你",
+      "en": "It stops you the moment you drift away",
+      "ja": "気がそれた瞬間に、問いただす",
+      "ru": "Программа остановит вас в момент, когда вы отвлеклись"
+    },
+    "ok": {
+      "zh": "好",
+      "en": "OK",
+      "ja": "OK",
+      "ru": "ОК"
+    },
+    "cancel": {
+      "zh": "取消",
+      "en": "Cancel",
+      "ja": "キャンセル",
+      "ru": "Отмена"
+    },
+    "save": {
+      "zh": "保存",
+      "en": "Save",
+      "ja": "保存",
+      "ru": "Сохранить"
+    },
+    "close": {
+      "zh": "关闭",
+      "en": "Close",
+      "ja": "閉じる",
+      "ru": "Закрыть"
+    },
+    "delete": {
+      "zh": "删除",
+      "en": "Delete",
+      "ja": "削除",
+      "ru": "Удалить"
+    },
+    "back": {
+      "zh": "返回",
+      "en": "Back",
+      "ja": "戻る",
+      "ru": "Назад"
+    },
+    "done": {
+      "zh": "完成",
+      "en": "Done",
+      "ja": "完了",
+      "ru": "Готово"
+    },
+    "main_status_on": {
+      "zh": "监督中",
+      "en": "Watching",
+      "ja": "監視中",
+      "ru": "Наблюдаю"
+    },
+    "main_status_off": {
+      "zh": "已关闭",
+      "en": "Off",
+      "ja": "停止中",
+      "ru": "Выключено"
+    },
+    "main_next": {
+      "zh": "下一次质问",
+      "en": "Next check",
+      "ja": "次の質問",
+      "ru": "Следующая проверка"
+    },
+    "main_today_popups": {
+      "zh": "今天被问",
+      "en": "Asked today",
+      "ja": "今日の回数",
+      "ru": "Вопросов сегодня"
+    },
+    "main_today_active": {
+      "zh": "今天在用",
+      "en": "Active today",
+      "ja": "今日の使用",
+      "ru": "Активно сегодня"
+    },
+    "main_last": {
+      "zh": "上一次回答",
+      "en": "Last answer",
+      "ja": "前回の答え",
+      "ru": "Прошлый ответ"
+    },
+    "main_start": {
+      "zh": "开始监督",
+      "en": "Start watching",
+      "ja": "監視を始める",
+      "ru": "Начать"
+    },
+    "main_stop": {
+      "zh": "停止",
+      "en": "Stop",
+      "ja": "停止",
+      "ru": "Остановить"
+    },
+    "main_settings": {
+      "zh": "设置",
+      "en": "Settings",
+      "ja": "設定",
+      "ru": "Настройки"
+    },
+    "main_history": {
+      "zh": "记录",
+      "en": "History",
+      "ja": "記録",
+      "ru": "История"
+    },
+    "main_stats": {
+      "zh": "统计",
+      "en": "Stats",
+      "ja": "統計",
+      "ru": "Статистика"
+    },
+    "main_paused": {
+      "zh": "已暂停，还有 {0} 分钟",
+      "en": "Paused, {0} min left",
+      "ja": "一時停止中、あと {0} 分",
+      "ru": "Пауза, осталось {0} мин"
+    },
+    "pause_menu": {
+      "zh": "暂停一会",
+      "en": "Pause for a while",
+      "ja": "しばらく止める",
+      "ru": "Пауза"
+    },
+    "pause_30": {
+      "zh": "暂停 30 分钟",
+      "en": "Pause 30 minutes",
+      "ja": "30 分止める",
+      "ru": "Пауза 30 минут"
+    },
+    "pause_60": {
+      "zh": "暂停 1 小时",
+      "en": "Pause 1 hour",
+      "ja": "1 時間止める",
+      "ru": "Пауза 1 час"
+    },
+    "pause_today": {
+      "zh": "暂停到今天结束",
+      "en": "Pause until tomorrow",
+      "ja": "今日いっぱい止める",
+      "ru": "Пауза до завтра"
+    },
+    "pause_off": {
+      "zh": "取消暂停",
+      "en": "Resume now",
+      "ja": "一時停止を解除",
+      "ru": "Снять паузу"
+    },
+    "paused_toast": {
+      "zh": "已暂停",
+      "en": "Paused",
+      "ja": "一時停止しました",
+      "ru": "Пауза"
+    },
+    "main_perms": {
+      "zh": "还差 {0} 项权限，点这里处理",
+      "en": "{0} permission(s) missing — tap to fix",
+      "ja": "権限が {0} 件足りません。タップして設定",
+      "ru": "Не хватает разрешений: {0} — нажмите"
+    },
+    "perm_overlay": {
+      "zh": "悬浮窗权限（弹窗要用）",
+      "en": "Display over other apps",
+      "ja": "他のアプリの上に重ねて表示",
+      "ru": "Поверх других приложений"
+    },
+    "perm_usage": {
+      "zh": "使用情况访问（统计要读前台应用）",
+      "en": "Usage access (to see the foreground app)",
+      "ja": "使用状況へのアクセス（前面アプリの取得）",
+      "ru": "Доступ к статистике (какое приложение активно)"
+    },
+    "perm_notif": {
+      "zh": "通知权限",
+      "en": "Notifications",
+      "ja": "通知",
+      "ru": "Уведомления"
+    },
+    "perm_battery": {
+      "zh": "电池优化白名单（防止被杀）",
+      "en": "Ignore battery optimisation",
+      "ja": "電池の最適化を除外",
+      "ru": "Отключить оптимизацию батареи"
+    },
+    "perm_granted": {
+      "zh": "已授权",
+      "en": "Granted",
+      "ja": "許可済み",
+      "ru": "Разрешено"
+    },
+    "perm_denied": {
+      "zh": "未授权",
+      "en": "Not granted",
+      "ja": "未許可",
+      "ru": "Не разрешено"
+    },
+    "popup_normal_title": {
+      "zh": "现在，说清楚你在干什么",
+      "en": "Say what you're doing. Right now.",
+      "ja": "今、何をしているのか言いなさい。",
+      "ru": "Скажите, чем вы сейчас заняты."
+    },
+    "popup_normal_sub": {
+      "zh": "打字说明必要性，才放你走",
+      "en": "Type why it matters, then you can go.",
+      "ja": "必要性を打ち込めば通します。",
+      "ru": "Напишите, зачем это нужно, — и идите."
+    },
+    "popup_long_title": {
+      "zh": "你已经连续用了 {0} 分钟",
+      "en": "You've been at it for {0} minutes straight.",
+      "ja": "もう {0} 分続けて使っています。",
+      "ru": "Вы не отрываясь работаете уже {0} минут."
+    },
+    "popup_long_sub": {
+      "zh": "值得吗？说清楚。",
+      "en": "Worth it? Say why.",
+      "ja": "それだけの価値がある？説明して。",
+      "ru": "Оно того стоит? Объясните."
+    },
+    "popup_back_title": {
+      "zh": "你刚离开，又回来了",
+      "en": "You left. And came right back.",
+      "ja": "離れたのに、すぐ戻ってきた。",
+      "ru": "Вы ушли. И сразу вернулись."
+    },
+    "popup_back_sub": {
+      "zh": "回来干什么？",
+      "en": "Back for what?",
+      "ja": "何をしに戻った？",
+      "ru": "Зачем вернулись?"
+    },
+    "popup_rest_title": {
+      "zh": "站起来，离开屏幕",
+      "en": "Stand up. Leave the screen.",
+      "ja": "立ち上がって、画面から離れて。",
+      "ru": "Встаньте. Отойдите от экрана."
+    },
+    "popup_rest_sub": {
+      "zh": "照做之后，打字说一声",
+      "en": "Do it, then type a word to continue.",
+      "ja": "実行してから、一言打ち込んでください。",
+      "ru": "Сделайте это и напишите слово, чтобы продолжить."
+    },
+    "popup_placeholder": {
+      "zh": "打点什么，别糊弄自己",
+      "en": "Type something. Don't fool yourself.",
+      "ja": "何か書いて。自分を誤魔化さないで。",
+      "ru": "Напишите что-нибудь. Не обманывайте себя."
+    },
+    "popup_min_chars": {
+      "zh": "至少 {0} 个字",
+      "en": "At least {0} characters",
+      "ja": "{0} 文字以上",
+      "ru": "Не меньше {0} символов"
+    },
+    "popup_cooldown": {
+      "zh": "冷静 {0} 秒",
+      "en": "Wait {0}s",
+      "ja": "あと {0} 秒",
+      "ru": "Подождите {0} с"
+    },
+    "popup_pass": {
+      "zh": "放行",
+      "en": "Let me go",
+      "ja": "通してよい",
+      "ru": "Пропустить"
+    },
+    "popup_slip": {
+      "zh": "我承认在摸鱼",
+      "en": "I admit I'm slacking",
+      "ja": "サボっていたと認める",
+      "ru": "Признаю, я трачу время"
+    },
+    "popup_slip_answer": {
+      "zh": "我承认在摸鱼",
+      "en": "I admit I'm slacking",
+      "ja": "サボっていたと認める",
+      "ru": "Признаю, я трачу время"
+    },
+    "popup_repeat": {
+      "zh": "这是你第 {0} 次给出同样的回答",
+      "en": "That's the {0}th time you've given the same answer",
+      "ja": "同じ答えは {0} 回目です",
+      "ru": "Такой же ответ уже {0}-й раз"
+    },
+    "popup_repeat_hint": {
+      "zh": "换个说法，或者去做事",
+      "en": "Say it differently, or go do the thing.",
+      "ja": "言い方を変えるか、実際にやる。",
+      "ru": "Скажите иначе — или займитесь делом."
+    },
+    "popup_paste_blocked": {
+      "zh": "不许粘贴。自己打。",
+      "en": "No pasting. Type it yourself.",
+      "ja": "貼り付け禁止。自分で打つ。",
+      "ru": "Без вставки. Наберите сами."
+    },
+    "popup_rest_footer": {
+      "zh": "这一轮不算你摸鱼，但要让身体动一下",
+      "en": "This round isn't a scolding — just move your body.",
+      "ja": "今回は叱らない。ただ、体を動かして。",
+      "ru": "Это не выговор — просто разомнитесь."
+    },
+    "rest.1": {
+      "zh": "喝口水",
+      "en": "Drink some water",
+      "ja": "水を一口",
+      "ru": "Выпейте воды"
+    },
+    "rest.2": {
+      "zh": "看六米外的东西二十秒",
+      "en": "Look at something 6 m away for 20 seconds",
+      "ja": "6 メートル先を 20 秒見る",
+      "ru": "20 секунд смотрите на что-то в 6 метрах"
+    },
+    "rest.3": {
+      "zh": "闭上眼睛，什么都不想",
+      "en": "Close your eyes. Nothing else.",
+      "ja": "目を閉じて、何も考えない",
+      "ru": "Закройте глаза. Ни о чём."
+    },
+    "rest.4": {
+      "zh": "站起来走两步",
+      "en": "Stand up, walk a few steps",
+      "ja": "立って二、三歩歩く",
+      "ru": "Встаньте и пройдитесь"
+    },
+    "rest.5": {
+      "zh": "慢慢转三圈脖子",
+      "en": "Roll your neck three times, slowly",
+      "ja": "首をゆっくり三回まわす",
+      "ru": "Медленно покрутите шеей три раза"
+    },
+    "rest.6": {
+      "zh": "把肩膀往后放",
+      "en": "Pull your shoulders back",
+      "ja": "肩を後ろに引く",
+      "ru": "Отведите плечи назад"
+    },
+    "rest.7": {
+      "zh": "甩甩手腕",
+      "en": "Shake out your wrists",
+      "ja": "手首をぶらぶら",
+      "ru": "Встряхните кистями"
+    },
+    "rest.8": {
+      "zh": "深呼吸四次",
+      "en": "Four deep breaths",
+      "ja": "深呼吸を四回",
+      "ru": "Четыре глубоких вдоха"
+    },
+    "rest.9": {
+      "zh": "往后靠，让椅背撑住腰",
+      "en": "Lean back and let the chair hold you",
+      "ja": "背もたれに寄りかかる",
+      "ru": "Откиньтесь на спинку кресла"
+    },
+    "rest.10": {
+      "zh": "把手机拿远一点",
+      "en": "Hold the phone further away",
+      "ja": "スマホを遠ざける",
+      "ru": "Отодвиньте телефон подальше"
+    },
+    "rest.11": {
+      "zh": "揉揉眼睛周围",
+      "en": "Rub around your eyes",
+      "ja": "目の周りを揉む",
+      "ru": "Помассируйте вокруг глаз"
+    },
+    "rest.12": {
+      "zh": "去趟厕所，顺便活动",
+      "en": "Go to the bathroom, move a bit",
+      "ja": "トイレに行って体を動かす",
+      "ru": "Сходите в туалет, разомнитесь"
+    },
+    "rest.13": {
+      "zh": "调一下坐姿，脚踩实",
+      "en": "Sit up, feet flat on the floor",
+      "ja": "姿勢を直して、足を床に",
+      "ru": "Сядьте ровно, стопы на полу"
+    },
+    "rest.14": {
+      "zh": "二十秒内别看任何屏幕",
+      "en": "Twenty seconds, no screens",
+      "ja": "20 秒は画面を見ない",
+      "ru": "20 секунд без экранов"
+    },
+    "settings_title": {
+      "zh": "设置",
+      "en": "Settings",
+      "ja": "設定",
+      "ru": "Настройки"
+    },
+    "group_timing": {
+      "zh": "节奏",
+      "en": "Rhythm",
+      "ja": "タイミング",
+      "ru": "Ритм"
+    },
+    "set_min_minutes": {
+      "zh": "两次质问的最短间隔",
+      "en": "Shortest gap between checks",
+      "ja": "質問の最短間隔",
+      "ru": "Минимальный интервал"
+    },
+    "set_max_minutes": {
+      "zh": "最长间隔",
+      "en": "Longest gap",
+      "ja": "最長間隔",
+      "ru": "Максимальный интервал"
+    },
+    "set_first_minutes": {
+      "zh": "启动后第一次",
+      "en": "First check after start",
+      "ja": "開始後の初回",
+      "ru": "Первая проверка после старта"
+    },
+    "set_min_minutes_hint": {
+      "zh": "每次在最短和最长之间随机，别让你摸出规律",
+      "en": "Each gap is random between the two, so you can't game it",
+      "ja": "最短と最長の間でランダム。規則性を読ませない",
+      "ru": "Интервал случаен между этими значениями — к нему не привыкнуть"
+    },
+    "group_screen": {
+      "zh": "锁屏与离屏",
+      "en": "Screen off",
+      "ja": "画面オフ",
+      "ru": "Экран выключен"
+    },
+    "set_watch_off_screen": {
+      "zh": "锁屏时也计算和提醒",
+      "en": "Keep counting while locked",
+      "ja": "ロック中も計測する",
+      "ru": "Считать и при заблокированном экране"
+    },
+    "set_watch_off_screen_hint": {
+      "zh": "打开后是「全时段」模式：发呆、刷手机也算在内",
+      "en": "Turns on all-hours mode: staring into space counts too",
+      "ja": "オンにすると全時間モード：ぼんやりも含む",
+      "ru": "Режим «всё время»: считается и праздное лежание"
+    },
+    "set_off_screen_grace": {
+      "zh": "离屏宽限",
+      "en": "Off-screen grace",
+      "ja": "画面オフの猶予",
+      "ru": "Льгота при выключенном экране"
+    },
+    "set_alert_when_off_screen": {
+      "zh": "锁屏时也响铃",
+      "en": "Ring while locked",
+      "ja": "ロック中も鳴らす",
+      "ru": "Звонить при блокировке"
+    },
+    "group_answer": {
+      "zh": "放行规则",
+      "en": "Passing rules",
+      "ja": "通過ルール",
+      "ru": "Правила пропуска"
+    },
+    "set_min_chars": {
+      "zh": "最少字数",
+      "en": "Minimum characters",
+      "ja": "最低文字数",
+      "ru": "Минимум символов"
+    },
+    "set_allow_repeat": {
+      "zh": "允许和上次回答一样",
+      "en": "Allow repeating last answer",
+      "ja": "前回と同じ答えを許す",
+      "ru": "Разрешать повтор прошлого ответа"
+    },
+    "set_block_paste": {
+      "zh": "禁止粘贴",
+      "en": "Block pasting",
+      "ja": "貼り付けを禁止",
+      "ru": "Запретить вставку"
+    },
+    "set_cooldown": {
+      "zh": "冷静期",
+      "en": "Cooldown",
+      "ja": "クールダウン",
+      "ru": "Пауза"
+    },
+    "set_cooldown_hint": {
+      "zh": "可以填小数，比如 0.1",
+      "en": "Decimals are fine, e.g. 0.1",
+      "ja": "小数も可（例 0.1）",
+      "ru": "Можно дробное, например 0.1"
+    },
+    "set_repeat_warn": {
+      "zh": "重复几次开始警告",
+      "en": "Warn after N repeats",
+      "ja": "何回目から警告",
+      "ru": "Предупреждать после N повторов"
+    },
+    "group_alert": {
+      "zh": "提醒方式",
+      "en": "How to alert",
+      "ja": "通知方法",
+      "ru": "Способ оповещения"
+    },
+    "set_sound": {
+      "zh": "响铃",
+      "en": "Sound",
+      "ja": "音",
+      "ru": "Звук"
+    },
+    "set_vibrate": {
+      "zh": "震动",
+      "en": "Vibrate",
+      "ja": "振動",
+      "ru": "Вибрация"
+    },
+    "set_vibrate_pattern": {
+      "zh": "震动节奏",
+      "en": "Vibration pattern",
+      "ja": "振動パターン",
+      "ru": "Рисунок вибрации"
+    },
+    "vib_short": {
+      "zh": "短一下",
+      "en": "One short buzz",
+      "ja": "短く一回",
+      "ru": "Коротко"
+    },
+    "vib_double": {
+      "zh": "两下",
+      "en": "Two buzzes",
+      "ja": "二回",
+      "ru": "Дважды"
+    },
+    "vib_long": {
+      "zh": "长震",
+      "en": "One long buzz",
+      "ja": "長く一回",
+      "ru": "Долго"
+    },
+    "vib_strong": {
+      "zh": "急促三下",
+      "en": "Three quick buzzes",
+      "ja": "三回すばやく",
+      "ru": "Три быстрых"
+    },
+    "group_dnd": {
+      "zh": "免打扰",
+      "en": "Quiet hours",
+      "ja": "静かな時間",
+      "ru": "Тихие часы"
+    },
+    "set_dnd_enabled": {
+      "zh": "启用免打扰时段",
+      "en": "Enable quiet hours",
+      "ja": "静かな時間を有効に",
+      "ru": "Включить тихие часы"
+    },
+    "set_dnd_start": {
+      "zh": "开始",
+      "en": "From",
+      "ja": "開始",
+      "ru": "С"
+    },
+    "set_dnd_end": {
+      "zh": "结束",
+      "en": "To",
+      "ja": "終了",
+      "ru": "До"
+    },
+    "group_long": {
+      "zh": "长时间使用",
+      "en": "Long sessions",
+      "ja": "長時間使用",
+      "ru": "Долгая работа"
+    },
+    "set_long_alert": {
+      "zh": "太久没休息就提醒",
+      "en": "Remind me to rest",
+      "ja": "休憩を促す",
+      "ru": "Напоминать об отдыхе"
+    },
+    "set_long_minutes": {
+      "zh": "连续多久算太久",
+      "en": "Too long after",
+      "ja": "何分で長すぎ",
+      "ru": "«Слишком долго» после"
+    },
+    "group_lang": {
+      "zh": "语言",
+      "en": "Language",
+      "ja": "言語",
+      "ru": "Язык"
+    },
+    "set_language": {
+      "zh": "界面语言",
+      "en": "Interface language",
+      "ja": "表示言語",
+      "ru": "Язык интерфейса"
+    },
+    "lang_system": {
+      "zh": "跟随系统",
+      "en": "Follow system",
+      "ja": "システムに従う",
+      "ru": "Как в системе"
+    },
+    "group_shot": {
+      "zh": "截图",
+      "en": "Screenshots",
+      "ja": "スクリーンショット",
+      "ru": "Скриншоты"
+    },
+    "set_shot_enabled": {
+      "zh": "弹窗前截一张",
+      "en": "Capture a frame before asking",
+      "ja": "質問する前に一枚撮る",
+      "ru": "Снимать экран перед вопросом"
+    },
+    "set_shot_enabled_hint": {
+      "zh": "压缩后存本地，只给你自己回看",
+      "en": "Compressed and kept on device, for your eyes only",
+      "ja": "圧縮して端末内に保存。自分だけが見る",
+      "ru": "Сжимается и хранится на устройстве, только для вас"
+    },
+    "set_shot_width": {
+      "zh": "截图宽度",
+      "en": "Capture width",
+      "ja": "画像の幅",
+      "ru": "Ширина снимка"
+    },
+    "set_shot_quality": {
+      "zh": "JPEG 质量",
+      "en": "JPEG quality",
+      "ja": "JPEG 品質",
+      "ru": "Качество JPEG"
+    },
+    "set_shot_keep": {
+      "zh": "保留天数",
+      "en": "Keep for",
+      "ja": "保存日数",
+      "ru": "Хранить"
+    },
+    "set_shot_keep_hint": {
+      "zh": "设成 0 就不自动删",
+      "en": "0 means never auto-delete",
+      "ja": "0 なら自動削除しない",
+      "ru": "0 — не удалять автоматически"
+    },
+    "shot_auth": {
+      "zh": "截屏授权",
+      "en": "Screen capture",
+      "ja": "画面キャプチャ",
+      "ru": "Захват экрана"
+    },
+    "shot_auth_hint": {
+      "zh": "安卓不允许后台偷偷截屏。点一下，在系统弹窗里把「应用范围」选成「整个屏幕」再点「开始」；重启手机后要重新授权。",
+      "en": "Android forbids silent background capture. Tap here, set the range to “Entire screen” in the system dialog, then tap Start. You'll need to re-grant after a reboot.",
+      "ja": "Android はバックグラウンドでの無断撮影を禁止しています。ここをタップし、システムのダイアログで範囲を「画面全体」にしてから「開始」を押してください。再起動後は再許可が必要です。",
+      "ru": "Android запрещает скрытую съёмку экрана. Нажмите здесь, в системном окне выберите «Весь экран» и нажмите «Начать». После перезагрузки нужно разрешить заново."
+    },
+    "shot_need_auth": {
+      "zh": "还没授权截屏，这次只记了文字",
+      "en": "Screen capture isn't granted — only text was saved",
+      "ja": "画面キャプチャ未許可のため、文字だけ記録しました",
+      "ru": "Захват экрана не разрешён — сохранён только текст"
+    },
+    "shot_denied": {
+      "zh": "授权被取消",
+      "en": "Permission cancelled",
+      "ja": "許可がキャンセルされました",
+      "ru": "Разрешение отменено"
+    },
+    "shot_none": {
+      "zh": "这次没截到图",
+      "en": "No frame captured",
+      "ja": "今回は撮れませんでした",
+      "ru": "Кадр не получен"
+    },
+    "shot_delete": {
+      "zh": "删除这张",
+      "en": "Delete this shot",
+      "ja": "この画像を削除",
+      "ru": "Удалить снимок"
+    },
+    "shot_tap": {
+      "zh": "点开看大图",
+      "en": "Tap to view",
+      "ja": "タップで拡大",
+      "ru": "Нажмите, чтобы открыть"
+    },
+    "group_sync": {
+      "zh": "记录同步",
+      "en": "Sync",
+      "ja": "同期",
+      "ru": "Синхронизация"
+    },
+    "set_sync_enabled": {
+      "zh": "启用同步",
+      "en": "Enable sync",
+      "ja": "同期を有効に",
+      "ru": "Включить синхронизацию"
+    },
+    "set_sync_url": {
+      "zh": "WebDAV 地址",
+      "en": "WebDAV URL",
+      "ja": "WebDAV URL",
+      "ru": "Адрес WebDAV"
+    },
+    "set_sync_user": {
+      "zh": "账号",
+      "en": "Account",
+      "ja": "アカウント",
+      "ru": "Логин"
+    },
+    "set_sync_pass": {
+      "zh": "应用密码",
+      "en": "App password",
+      "ja": "アプリパスワード",
+      "ru": "Пароль приложения"
+    },
+    "set_sync_device": {
+      "zh": "设备名",
+      "en": "Device name",
+      "ja": "端末名",
+      "ru": "Имя устройства"
+    },
+    "set_sync_device_hint": {
+      "zh": "电脑和手机要不一样，否则记录会互相覆盖",
+      "en": "Must differ from your other device, or records overwrite each other",
+      "ja": "他の端末と違う名前に。同じだと上書きされます",
+      "ru": "Должно отличаться от другого устройства, иначе записи перезапишутся"
+    },
+    "set_sync_test": {
+      "zh": "测试连接",
+      "en": "Test connection",
+      "ja": "接続テスト",
+      "ru": "Проверить подключение"
+    },
+    "set_sync_now": {
+      "zh": "立即同步",
+      "en": "Sync now",
+      "ja": "今すぐ同期",
+      "ru": "Синхронизировать"
+    },
+    "group_data": {
+      "zh": "数据",
+      "en": "Data",
+      "ja": "データ",
+      "ru": "Данные"
+    },
+    "set_export": {
+      "zh": "导出全部记录",
+      "en": "Export all records",
+      "ja": "全記録を書き出す",
+      "ru": "Экспорт записей"
+    },
+    "set_clear": {
+      "zh": "清空记录",
+      "en": "Clear records",
+      "ja": "記録を消す",
+      "ru": "Очистить записи"
+    },
+    "clear_confirm": {
+      "zh": "所有问答记录和统计都会被删除，不能撤销。",
+      "en": "All records and stats will be deleted. This cannot be undone.",
+      "ja": "すべての記録と統計が削除されます。元に戻せません。",
+      "ru": "Все записи и статистика будут удалены безвозвратно."
+    },
+    "about": {
+      "zh": "关于",
+      "en": "About",
+      "ja": "このアプリ",
+      "ru": "О программе"
+    },
+    "about_body": {
+      "zh": "纯本地运行。不开同步就一个字节都不上网。记录只存在这台设备里，随时可以整个删掉。",
+      "en": "Runs entirely on-device. With sync off, not a single byte leaves the phone. Everything can be deleted at any time.",
+      "ja": "完全にローカル動作。同期を切れば一切送信しません。記録は端末内だけ、いつでも削除できます。",
+      "ru": "Работает полностью локально. Без синхронизации ни байта не уходит в сеть. Всё можно удалить в любой момент."
+    },
+    "history_title": {
+      "zh": "记录",
+      "en": "History",
+      "ja": "記録",
+      "ru": "История"
+    },
+    "history_empty": {
+      "zh": "还没有记录。被问一次，这里就多一条。",
+      "en": "Nothing yet. Each time you're asked, a line appears here.",
+      "ja": "まだ記録はありません。質問されるたびに増えます。",
+      "ru": "Пока пусто. Каждый вопрос появится здесь."
+    },
+    "history_count": {
+      "zh": "共 {0} 条",
+      "en": "{0} total",
+      "ja": "全 {0} 件",
+      "ru": "Всего {0}"
+    },
+    "history_slip": {
+      "zh": "承认摸鱼",
+      "en": "admitted slacking",
+      "ja": "サボりを認めた",
+      "ru": "признал(а) праздность"
+    },
+    "stats_title": {
+      "zh": "统计",
+      "en": "Stats",
+      "ja": "統計",
+      "ru": "Статистика"
+    },
+    "stats_tab_app": {
+      "zh": "按应用",
+      "en": "By app",
+      "ja": "アプリ別",
+      "ru": "По приложениям"
+    },
+    "stats_tab_text": {
+      "zh": "按窗口",
+      "en": "By window",
+      "ja": "ウィンドウ別",
+      "ru": "По окнам"
+    },
+    "stats_tab_answer": {
+      "zh": "我的回答",
+      "en": "My answers",
+      "ja": "自分の答え",
+      "ru": "Мои ответы"
+    },
+    "stats_times": {
+      "zh": "{0} 次",
+      "en": "{0}×",
+      "ja": "{0} 回",
+      "ru": "{0} раз"
+    },
+    "stats_empty": {
+      "zh": "今天还没有可统计的使用记录",
+      "en": "No usage recorded today",
+      "ja": "今日の記録はまだありません",
+      "ru": "Сегодня ещё нет данных"
+    },
+    "stats_popups": {
+      "zh": "质问 {0} 次",
+      "en": "{0} checks",
+      "ja": "質問 {0} 回",
+      "ru": "Проверок: {0}"
+    },
+    "stats_active": {
+      "zh": "在用 {0}",
+      "en": "Active {0}",
+      "ja": "使用 {0}",
+      "ru": "Активно {0}"
+    },
+    "stats_unknown": {
+      "zh": "未知",
+      "en": "Unknown",
+      "ja": "不明",
+      "ru": "Неизвестно"
+    },
+    "stats_no_perm": {
+      "zh": "没有「使用情况访问」权限，统计不到。",
+      "en": "Usage access is not granted, so nothing can be counted.",
+      "ja": "「使用状況へのアクセス」が未許可のため計測できません。",
+      "ru": "Нет доступа к статистике использования — считать нечего."
+    },
+    "today": {
+      "zh": "今天",
+      "en": "Today",
+      "ja": "今日",
+      "ru": "Сегодня"
+    },
+    "yesterday": {
+      "zh": "昨天",
+      "en": "Yesterday",
+      "ja": "昨日",
+      "ru": "Вчера"
+    },
+    "sync_running": {
+      "zh": "同步中…",
+      "en": "Syncing…",
+      "ja": "同期中…",
+      "ru": "Синхронизация…"
+    },
+    "sync_ok": {
+      "zh": "同步完成，合并 {0} 条",
+      "en": "Synced, {0} merged",
+      "ja": "同期完了、{0} 件",
+      "ru": "Готово, объединено: {0}"
+    },
+    "sync_fail": {
+      "zh": "同步失败：{0}",
+      "en": "Sync failed: {0}",
+      "ja": "同期失敗：{0}",
+      "ru": "Ошибка синхронизации: {0}"
+    },
+    "sync_auth_fail": {
+      "zh": "账号或应用密码不对",
+      "en": "Wrong account or app password",
+      "ja": "アカウントかパスワードが違う",
+      "ru": "Неверный логин или пароль"
+    },
+    "sync_not_found": {
+      "zh": "目录不存在，先在网盘里建好这个文件夹",
+      "en": "Folder not found — create it first",
+      "ja": "フォルダがありません。先に作成してください",
+      "ru": "Папка не найдена — создайте её"
+    },
+    "sync_disabled": {
+      "zh": "同步没开",
+      "en": "Sync is off",
+      "ja": "同期が無効",
+      "ru": "Синхронизация выключена"
+    },
+    "sync_ok_conn": {
+      "zh": "连接正常",
+      "en": "Connection OK",
+      "ja": "接続は正常",
+      "ru": "Подключение в порядке"
+    },
+    "notif_channel": {
+      "zh": "监督状态",
+      "en": "Watching status",
+      "ja": "監視の状態",
+      "ru": "Статус наблюдения"
+    },
+    "notif_text": {
+      "zh": "下一次质问在 {0} 分钟后",
+      "en": "Next check in {0} min",
+      "ja": "次の質問は {0} 分後",
+      "ru": "Следующая проверка через {0} мин"
+    },
+    "notif_off": {
+      "zh": "监督已停止",
+      "en": "Watching stopped",
+      "ja": "監視を停止しました",
+      "ru": "Наблюдение остановлено"
+    },
+    "msg_need_overlay": {
+      "zh": "先给悬浮窗权限，否则弹不出来",
+      "en": "Grant the overlay permission first",
+      "ja": "まずオーバーレイ権限が必要です",
+      "ru": "Сначала разрешите показ поверх приложений"
+    },
+    "msg_started": {
+      "zh": "开始监督",
+      "en": "Watching started",
+      "ja": "監視を開始しました",
+      "ru": "Наблюдение началось"
+    },
+    "msg_stopped": {
+      "zh": "已停止",
+      "en": "Stopped",
+      "ja": "停止しました",
+      "ru": "Остановлено"
+    },
+    "msg_perms_needed": {
+      "zh": "还差权限，先去设置里补齐",
+      "en": "Some permissions are missing",
+      "ja": "権限が足りません",
+      "ru": "Не хватает разрешений"
+    },
+    "unit_min": {
+      "zh": "分钟",
+      "en": "min",
+      "ja": "分",
+      "ru": "мин"
+    },
+    "unit_hour": {
+      "zh": "小时",
+      "en": "h",
+      "ja": "時間",
+      "ru": "ч"
+    },
+    "unit_sec": {
+      "zh": "秒",
+      "en": "s",
+      "ja": "秒",
+      "ru": "с"
+    },
+    "unit_day": {
+      "zh": "天",
+      "en": "d",
+      "ja": "日",
+      "ru": "дн"
+    },
+    "never": {
+      "zh": "还没被问过",
+      "en": "Not yet",
+      "ja": "まだ",
+      "ru": "Ещё нет"
+    },
+    "export_ok": {
+      "zh": "已导出到 {0}",
+      "en": "Exported to {0}",
+      "ja": "{0} に書き出しました",
+      "ru": "Экспортировано в {0}"
+    },
+    "export_fail": {
+      "zh": "导出失败：{0}",
+      "en": "Export failed: {0}",
+      "ja": "書き出し失敗：{0}",
+      "ru": "Ошибка экспорта: {0}"
+    },
+    "value_range": {
+      "zh": "可填 {0} – {1}",
+      "en": "Allowed {0} – {1}",
+      "ja": "入力できる範囲 {0} – {1}",
+      "ru": "Допустимо {0} – {1}"
+    }
+  }
+}

@@ -1,0 +1,2654 @@
+# -*- coding: utf-8 -*-
+"""
+质问我 · Grill  (电脑端)
+
+一个会随机把你拦下来、逼你说清楚「为什么现在必须做这件事」的小程序。
+
+核心规则:
+  1. 以「屏幕是否亮着」为主信号。屏幕亮着就算在用——发呆、看视频、读长文
+     都不算离开。只有锁屏、或者长时间无输入且不在全屏播放时，才停表。
+  2. 每累计 40-90 分钟(随机,不可预测)弹一次。不显示倒计时。
+  3. 弹窗没有关闭按钮,Alt+F4 和 Esc 都无效,必须打字提交才消失。
+  4. 允许和上一条回答完全相同,但禁止粘贴(防复制上次答案)。
+  5. 不拦截、不锁屏、不说教。只记录,回头给你看账。
+
+运行:  python grill.py
+调试:  python grill.py --demo        立刻弹一次
+       python grill.py --selftest    只做环境自检,不开窗口
+"""
+
+import base64
+import ctypes
+import json
+import os
+import random
+import shutil
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import urllib.error
+import urllib.request
+import uuid
+from ctypes import wintypes
+from datetime import date, datetime, timedelta
+
+import tkinter as tk
+
+APP_NAME = "Grill"
+TITLE = "质问我 · 监督我"
+LEGACY_NAMES = ["AskMe"]
+
+
+def _resolve_data_dir():
+    """改名后把旧目录搬过来，搬不动就继续用旧的，绝不丢数据。"""
+    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    target = os.path.join(base, APP_NAME)
+    if os.path.isdir(target):
+        return target
+    for old_name in LEGACY_NAMES:
+        old = os.path.join(base, old_name)
+        if os.path.isdir(old):
+            try:
+                shutil.move(old, target)
+                return target
+            except Exception:
+                return old
+    return target
+
+
+DATA_DIR = _resolve_data_dir()
+CFG_PATH = os.path.join(DATA_DIR, "config.json")
+LOG_PATH = os.path.join(DATA_DIR, "log.jsonl")
+STATE_PATH = os.path.join(DATA_DIR, "state.json")
+ERR_PATH = os.path.join(DATA_DIR, "error.log")
+SYNC_PATH = os.path.join(DATA_DIR, "sync.json")
+SHOTS_DIR = os.path.join(DATA_DIR, "shots")
+USAGE_DIR = os.path.join(DATA_DIR, "usage")
+
+FONT = "Microsoft YaHei UI"
+
+INK = "#111827"
+MUTED = "#6B7280"
+FAINT = "#9CA3AF"
+LINE = "#E5E7EB"
+EDGE = "#94A3B8"
+BG = "#FFFFFF"
+SOFT = "#F7F8FA"
+ACCENT = "#185FA5"
+ACCENT_DARK = "#0C447C"
+ACCENT_PALE = "#9DB4CC"
+OK = "#1D9E75"
+WARN = "#854F0B"
+DANGER = "#A32D2D"
+DUP1 = "#B45309"
+DUP2 = "#A32D2D"
+
+DEFAULTS = {
+    # 总控
+    "enabled": 1,
+    # 节奏
+    "min_minutes": 40,
+    "max_minutes": 90,
+    "first_minutes": 25,
+    # 判定
+    "idle_stop_enabled": 1,
+    "away_minutes": 10,
+    "watch_off_screen": 0,
+    "off_screen_grace_minutes": 10,
+    "alert_when_off_screen": 1,
+    # 门槛
+    "min_chars": 2,
+    "allow_repeat": 1,
+    "block_paste": 1,
+    "cooldown_seconds": 3.0,
+    # 提醒
+    "sound": 1,
+    "sound_uri": "beep",
+    "dnd_enabled": 1,
+    "dnd_start": "22:00",
+    "dnd_end": "08:00",
+    # 附加
+    "long_session_alert": 0,
+    "long_session_minutes": 180,
+    "repeat_warn": 2,
+    "repeat_alert": 3,
+    # 行为统计与截图
+    "track_app": 1,
+    "track_titles": 1,
+    "shot_enabled": 1,
+    "shot_width": 800,
+    "shot_quality": 60,
+    "shot_keep_days": 30,
+    # 同步
+    "sync_enabled": 0,
+    "sync_url": "",
+    "sync_user": "",
+    "sync_pass": "",
+    "sync_device_id": "pc",
+    # 临时
+    "paused_until": 0,
+}
+
+_LOG_CACHE = {"mtime": 0, "rows": []}
+
+
+# ---------------------------------------------------------------- 基础设施
+
+def ensure_dirs():
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def load_json(path, fallback):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return fallback
+
+
+def save_json(path, obj):
+    ensure_dirs()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def load_cfg():
+    raw = load_json(CFG_PATH, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    # 旧版配置迁移
+    if "idle_seconds" in raw and "away_minutes" not in raw:
+        try:
+            raw["away_minutes"] = max(1, int(raw["idle_seconds"]) // 60)
+        except Exception:
+            pass
+    if "beep" in raw and "sound" not in raw:
+        raw["sound"] = int(bool(raw["beep"]))
+    # 早期把 WebDAV 密码单独存在 sync.json，现在统一进 config.json
+    legacy = load_json(SYNC_PATH, {})
+    if isinstance(legacy, dict):
+        if legacy.get("pass") and not raw.get("sync_pass"):
+            raw["sync_pass"] = str(legacy["pass"])
+        if legacy.get("user") and not raw.get("sync_user"):
+            raw["sync_user"] = str(legacy["user"])
+        if legacy.get("url") and not raw.get("sync_url"):
+            raw["sync_url"] = str(legacy["url"])
+    cfg = dict(DEFAULTS)
+    cfg.update({k: v for k, v in raw.items() if k in DEFAULTS})
+    return cfg
+
+
+def save_cfg(cfg):
+    save_json(CFG_PATH, {k: cfg.get(k, DEFAULTS[k]) for k in DEFAULTS})
+
+
+def append_log(rec):
+    ensure_dirs()
+    with open(LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    _LOG_CACHE["mtime"] = 0
+
+
+def read_log():
+    if not os.path.exists(LOG_PATH):
+        return []
+    try:
+        mtime = os.path.getmtime(LOG_PATH)
+    except OSError:
+        mtime = 0
+    if _LOG_CACHE["mtime"] == mtime and _LOG_CACHE["rows"]:
+        return [dict(r) for r in _LOG_CACHE["rows"]]
+
+    rows = []
+    try:
+        with open(LOG_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(r, dict):
+                    continue
+                if not r.get("id"):
+                    r["id"] = "pc-%d" % int(float(r.get("ts", 0)) * 1000)
+                rows.append(r)
+    except Exception:
+        return []
+    rows.sort(key=lambda r: float(r.get("ts", 0)))
+    _LOG_CACHE["mtime"] = mtime
+    _LOG_CACHE["rows"] = rows
+    return [dict(r) for r in rows]
+
+
+def log_error(exc_text):
+    try:
+        ensure_dirs()
+        with open(ERR_PATH, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}]\n{exc_text}\n")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- 时间工具
+
+def parse_hhmm(s, fallback=(0, 0)):
+    try:
+        h, m = str(s).strip().replace("：", ":").split(":")
+        h, m = int(h), int(m)
+        if 0 <= h < 24 and 0 <= m < 60:
+            return h, m
+    except Exception:
+        pass
+    return fallback
+
+
+def in_dnd(cfg, dt=None):
+    if not int(cfg.get("dnd_enabled", 0)):
+        return False
+    dt = dt or datetime.now()
+    sh, sm = parse_hhmm(cfg.get("dnd_start"), (22, 0))
+    eh, em = parse_hhmm(cfg.get("dnd_end"), (8, 0))
+    s, e = sh * 60 + sm, eh * 60 + em
+    if s == e:
+        return False
+    cur = dt.hour * 60 + dt.minute
+    if s < e:
+        return s <= cur < e
+    return cur >= s or cur < e
+
+
+def fmt_span(seconds):
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} 秒"
+    mins = seconds // 60
+    if mins < 60:
+        return f"{mins} 分钟"
+    h, m = mins // 60, mins % 60
+    if m == 0:
+        return f"{h} 小时"
+    return f"{h} 小时 {m} 分"
+
+
+def fmt_ago(ts):
+    if not ts:
+        return ""
+    return fmt_span(time.time() - float(ts)) + "前"
+
+
+# ---------------------------------------------------------------- Windows 状态
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+
+_lii = LASTINPUTINFO()
+_lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+_user32 = ctypes.windll.user32
+_kernel32 = ctypes.windll.kernel32
+gdi32 = ctypes.windll.gdi32
+gdi32.CreateCompatibleDC.restype = wintypes.HDC
+gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+gdi32.CreateCompatibleBitmap.restype = wintypes.HBITMAP
+gdi32.CreateCompatibleBitmap.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+gdi32.SelectObject.restype = wintypes.HGDIOBJ
+gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+gdi32.BitBlt.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                         ctypes.c_int, wintypes.HDC, ctypes.c_int, ctypes.c_int,
+                         wintypes.DWORD]
+gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+gdi32.DeleteDC.argtypes = [wintypes.HDC]
+_user32.GetDC.restype = wintypes.HDC
+_user32.GetDC.argtypes = [wintypes.HWND]
+_user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+_user32.GetForegroundWindow.restype = wintypes.HWND
+_user32.OpenInputDesktop.restype = wintypes.HANDLE
+_user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+
+_DESKTOP_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Windows.UI.Core.CoreWindow"}
+
+
+def idle_seconds():
+    """距离上一次键盘或鼠标操作过了多少秒。"""
+    try:
+        if not _user32.GetLastInputInfo(ctypes.byref(_lii)):
+            return 0.0
+        now = _kernel32.GetTickCount() & 0xFFFFFFFF
+        delta = (now - _lii.dwTime) & 0xFFFFFFFF
+        return delta / 1000.0
+    except Exception:
+        return 0.0
+
+
+def is_locked():
+    """当前输入桌面不是用户桌面 = 已锁屏 / 正在切用户。"""
+    h = None
+    try:
+        h = _user32.OpenInputDesktop(0, False, 0x0100)
+        return not h
+    except Exception:
+        return False
+    finally:
+        if h:
+            try:
+                _user32.CloseDesktop(h)
+            except Exception:
+                pass
+
+
+def _window_class(hwnd):
+    buf = ctypes.create_unicode_buffer(256)
+    try:
+        _user32.GetClassNameW(hwnd, buf, 256)
+    except Exception:
+        return ""
+    return buf.value
+
+
+def is_fullscreen():
+    """前台窗口是否铺满整块屏幕（看视频、全屏文档、游戏）。"""
+    try:
+        hwnd = _user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        if _window_class(hwnd) in _DESKTOP_CLASSES:
+            return False
+        rect = wintypes.RECT()
+        if not _user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+        sw = _user32.GetSystemMetrics(0)
+        sh = _user32.GetSystemMetrics(1)
+        if sw <= 0 or sh <= 0:
+            return False
+        return (rect.left <= 1 and rect.top <= 1
+                and rect.right >= sw - 1 and rect.bottom >= sh - 1)
+    except Exception:
+        return False
+
+
+def force_foreground(win):
+    """尽量把窗口抢到最前并拿到键盘焦点。"""
+    try:
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id()) or win.winfo_id()
+        ctypes.windll.user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- 声音
+
+def beep(cfg=None):
+    try:
+        import winsound
+    except Exception:
+        return
+    uri = str((cfg or {}).get("sound_uri") or "beep")
+    if uri and uri.lower() != "beep" and os.path.exists(uri):
+        try:
+            winsound.PlaySound(uri, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            return
+        except Exception:
+            pass
+    try:
+        winsound.MessageBeep(0x00000040)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- 前台窗口
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+_kernel32.OpenProcess.restype = wintypes.HANDLE
+_kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+_kernel32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+_user32.GetWindowThreadProcessId.argtypes = [
+    wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+_user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+
+
+def foreground_app():
+    """返回 (进程名, 窗口标题)。自己的窗口返回 ("", "")。"""
+    try:
+        hwnd = _user32.GetForegroundWindow()
+        if not hwnd:
+            return "", ""
+        pid = wintypes.DWORD(0)
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value or pid.value == os.getpid():
+            return "", ""
+        name = ""
+        h = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if h:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+            if _kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                name = os.path.basename(buf.value or "")
+            _kernel32.CloseHandle(h)
+        n = _user32.GetWindowTextLengthW(hwnd)
+        title = ""
+        if n > 0:
+            tbuf = ctypes.create_unicode_buffer(n + 2)
+            _user32.GetWindowTextW(hwnd, tbuf, n + 2)
+            title = (tbuf.value or "").strip()
+        return (name or "unknown"), title
+    except Exception:
+        return "", ""
+
+
+# ---------------------------------------------------------------- 截图（GDI+）
+
+_gdiplus = None
+_gdip_token = ctypes.c_void_p(0)
+_gdip_codecs = {}
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+
+class _GdiplusStartupInput(ctypes.Structure):
+    _fields_ = [("GdiplusVersion", wintypes.UINT),
+                ("DebugEventCallback", ctypes.c_void_p),
+                ("SuppressBackgroundThread", wintypes.BOOL),
+                ("SuppressExternalCodecs", wintypes.BOOL)]
+
+
+class _ImageCodecInfo(ctypes.Structure):
+    _fields_ = [("Clsid", _GUID), ("FormatID", _GUID),
+                ("CodecName", wintypes.LPWSTR), ("DllName", wintypes.LPWSTR),
+                ("FormatDescription", wintypes.LPWSTR),
+                ("FilenameExtension", wintypes.LPWSTR),
+                ("MimeType", wintypes.LPWSTR), ("Flags", wintypes.DWORD),
+                ("Version", wintypes.DWORD), ("SigCount", wintypes.DWORD),
+                ("SigSize", wintypes.DWORD),
+                ("SigPattern", ctypes.POINTER(ctypes.c_ubyte)),
+                ("SigMask", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+class _EncoderParameter(ctypes.Structure):
+    _fields_ = [("Guid", _GUID), ("NumberOfValues", ctypes.c_ulong),
+                ("Type", ctypes.c_ulong), ("Value", ctypes.c_void_p)]
+
+
+class _EncoderParameters(ctypes.Structure):
+    _fields_ = [("Count", ctypes.c_uint), ("Parameter", _EncoderParameter * 1)]
+
+
+def _mkguid(s):
+    u = uuid.UUID(s)
+    g = _GUID()
+    g.Data1 = u.time_low
+    g.Data2 = u.time_mid
+    g.Data3 = u.time_hi_version
+    for i, b in enumerate(u.bytes[8:]):
+        g.Data4[i] = b
+    return g
+
+
+def _gdiplus_ready(mime="image/jpeg"):
+    """懒初始化 GDI+，返回指定格式编码器的 CLSID。"""
+    global _gdiplus
+    if _gdiplus is None:
+        gp = ctypes.WinDLL("gdiplus")
+        gp.GdiplusStartup.argtypes = [ctypes.POINTER(ctypes.c_void_p),
+                                      ctypes.POINTER(_GdiplusStartupInput),
+                                      ctypes.c_void_p]
+        gp.GdiplusStartup.restype = ctypes.c_int
+        gp.GdipGetImageEncodersSize.argtypes = [ctypes.POINTER(ctypes.c_uint),
+                                                ctypes.POINTER(ctypes.c_uint)]
+        gp.GdipGetImageEncoders.restype = ctypes.c_int
+        gp.GdipCreateBitmapFromHBITMAP.restype = ctypes.c_int
+        gp.GdipCreateBitmapFromHBITMAP.argtypes = [wintypes.HBITMAP, wintypes.HPALETTE,
+                                                   ctypes.POINTER(ctypes.c_void_p)]
+        gp.GdipGetImageThumbnail.restype = ctypes.c_int
+        gp.GdipGetImageThumbnail.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+                                             ctypes.POINTER(ctypes.c_void_p),
+                                             ctypes.c_void_p, ctypes.c_void_p]
+        gp.GdipSaveImageToFile.restype = ctypes.c_int
+        gp.GdipSaveImageToFile.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR,
+                                           ctypes.POINTER(_GUID), ctypes.c_void_p]
+        gp.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+        gp.GdipLoadImageFromFile.restype = ctypes.c_int
+        gp.GdipLoadImageFromFile.argtypes = [wintypes.LPCWSTR,
+                                             ctypes.POINTER(ctypes.c_void_p)]
+        gp.GdipGetImageWidth.argtypes = [ctypes.c_void_p,
+                                         ctypes.POINTER(ctypes.c_uint)]
+        gp.GdipGetImageHeight.argtypes = [ctypes.c_void_p,
+                                          ctypes.POINTER(ctypes.c_uint)]
+
+        si = _GdiplusStartupInput()
+        si.GdiplusVersion = 1
+        if gp.GdiplusStartup(ctypes.byref(_gdip_token), ctypes.byref(si), None) != 0:
+            raise OSError("GdiplusStartup failed")
+        _gdiplus = gp
+    else:
+        gp = _gdiplus
+
+    if mime in _gdip_codecs:
+        return _gdip_codecs[mime]
+
+    num = ctypes.c_uint(0)
+    size = ctypes.c_uint(0)
+    gp.GdipGetImageEncodersSize(ctypes.byref(num), ctypes.byref(size))
+    if not size.value:
+        raise OSError("no image encoders")
+    buf = ctypes.create_string_buffer(size.value)
+    if gp.GdipGetImageEncoders(num, size, buf) != 0:
+        raise OSError("GdipGetImageEncoders failed")
+    arr = ctypes.cast(buf, ctypes.POINTER(_ImageCodecInfo))
+    for i in range(num.value):
+        if (arr[i].MimeType or "").lower() == mime:
+            _gdiplus = gp
+            _gdip_codecs[mime] = arr[i].Clsid
+            return _gdip_codecs[mime]
+    raise OSError("encoder not found: " + mime)
+
+
+def capture_image(path, max_w=800, quality=60, mime="image/jpeg", rect=None):
+    """截图并缩放后保存。rect=(x,y,w,h) 只截该区域，否则截主屏。"""
+    try:
+        clsid = _gdiplus_ready(mime)
+        gp = _gdiplus
+        if rect:
+            sx, sy, sw, sh = [int(v) for v in rect]
+        else:
+            sx, sy = 0, 0
+            sw = _user32.GetSystemMetrics(0)
+            sh = _user32.GetSystemMetrics(1)
+        if sw <= 0 or sh <= 0:
+            return False
+        hdc = _user32.GetDC(None)
+        mem = gdi32.CreateCompatibleDC(hdc)
+        bmp = gdi32.CreateCompatibleBitmap(hdc, sw, sh)
+        old = gdi32.SelectObject(mem, bmp)
+        ok = gdi32.BitBlt(mem, 0, 0, sw, sh, hdc, sx, sy, 0x00CC0020)
+        gdi32.SelectObject(mem, old)
+        if not ok:
+            gdi32.DeleteObject(bmp)
+            gdi32.DeleteDC(mem)
+            _user32.ReleaseDC(None, hdc)
+            return False
+
+        img = ctypes.c_void_p(0)
+        if gp.GdipCreateBitmapFromHBITMAP(bmp, None, ctypes.byref(img)) != 0:
+            gdi32.DeleteObject(bmp)
+            gdi32.DeleteDC(mem)
+            _user32.ReleaseDC(None, hdc)
+            return False
+
+        tw = int(max(160, min(sw, int(max_w or 800))))
+        th = int(round(sh * tw / float(sw)))
+        thumb = ctypes.c_void_p(0)
+        if gp.GdipGetImageThumbnail(img, tw, th, ctypes.byref(thumb), None, None) != 0:
+            gp.GdipDisposeImage(img)
+            gdi32.DeleteObject(bmp)
+            gdi32.DeleteDC(mem)
+            _user32.ReleaseDC(None, hdc)
+            return False
+
+        params_ptr = None
+        params = None
+        if mime == "image/jpeg":
+            q = ctypes.c_long(int(max(20, min(95, int(quality or 60)))))
+            params = _EncoderParameters()
+            params.Count = 1
+            params.Parameter[0].Guid = _mkguid("1D5BE4B5-FA4A-452D-9CDD-5DB35105E7EB")
+            params.Parameter[0].NumberOfValues = 1
+            params.Parameter[0].Type = 4
+            params.Parameter[0].Value = ctypes.cast(ctypes.byref(q), ctypes.c_void_p)
+            params_ptr = ctypes.byref(params)
+
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        rc = gp.GdipSaveImageToFile(thumb, path, ctypes.byref(clsid), params_ptr)
+
+        gp.GdipDisposeImage(thumb)
+        gp.GdipDisposeImage(img)
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(mem)
+        _user32.ReleaseDC(None, hdc)
+        return rc == 0 and os.path.exists(path)
+    except Exception:
+        log_error(traceback.format_exc())
+        return False
+
+
+def capture_jpeg(path, max_w=800, quality=60):
+    return capture_image(path, max_w, quality, "image/jpeg")
+
+
+def image_to_png(src, dst, max_w=160):
+    """把任意 GDI+ 认识的图片缩放后存成 PNG（tkinter 只能直接显示 PNG/GIF）。"""
+    try:
+        _gdiplus_ready("image/png")
+        gp = _gdiplus
+        clsid = _gdip_codecs["image/png"]
+        img = ctypes.c_void_p(0)
+        if gp.GdipLoadImageFromFile(src, ctypes.byref(img)) != 0:
+            return False
+        w = ctypes.c_uint(0)
+        h = ctypes.c_uint(0)
+        gp.GdipGetImageWidth(img, ctypes.byref(w))
+        gp.GdipGetImageHeight(img, ctypes.byref(h))
+        if not w.value or not h.value:
+            gp.GdipDisposeImage(img)
+            return False
+        tw = int(max(32, min(w.value, int(max_w))))
+        th = max(1, int(round(h.value * tw / float(w.value))))
+        thumb = ctypes.c_void_p(0)
+        if gp.GdipGetImageThumbnail(img, tw, th, ctypes.byref(thumb), None, None) != 0:
+            gp.GdipDisposeImage(img)
+            return False
+        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        rc = gp.GdipSaveImageToFile(thumb, dst, ctypes.byref(clsid), None)
+        gp.GdipDisposeImage(thumb)
+        gp.GdipDisposeImage(img)
+        return rc == 0 and os.path.exists(dst)
+    except Exception:
+        log_error(traceback.format_exc())
+        return False
+
+
+def thumb_path_for(shot_rel, max_w=200):
+    """截图路径 -> 缩略图 PNG 路径（宽度写进文件名，改宽度会自动重建）。"""
+    p = os.path.join(DATA_DIR, shot_rel)
+    d, f = os.path.split(p)
+    return os.path.join(d, "thumbs", "%s-%d.png" % (os.path.splitext(f)[0], int(max_w)))
+
+
+def ensure_thumb(shot_rel, max_w=200):
+    """有就复用，没有就生成。返回 PNG 绝对路径，失败返回空串。"""
+    if not shot_rel:
+        return ""
+    src = os.path.join(DATA_DIR, shot_rel)
+    if not os.path.exists(src):
+        return ""
+    dst = thumb_path_for(shot_rel, max_w)
+    try:
+        if os.path.exists(dst) and os.path.getmtime(dst) >= os.path.getmtime(src):
+            return dst
+    except Exception:
+        pass
+    return dst if image_to_png(src, dst, max_w) else ""
+
+
+def shot_path_for(rec_id):
+    folder = os.path.join(SHOTS_DIR, date.today().isoformat())
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, f"{datetime.now():%H%M%S}-{rec_id}.jpg")
+
+
+def cleanup_shots(keep_days):
+    """删掉超过 keep_days 天的截图目录。keep_days<=0 表示永久保留。"""
+    keep = int(keep_days or 0)
+    if keep <= 0 or not os.path.isdir(SHOTS_DIR):
+        return 0
+    cutoff = (date.today() - timedelta(days=keep)).isoformat()
+    removed = 0
+    try:
+        for name in os.listdir(SHOTS_DIR):
+            p = os.path.join(SHOTS_DIR, name)
+            if not os.path.isdir(p):
+                continue
+            if len(name) == 10 and name[4] == "-" and name < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+                removed += 1
+    except Exception:
+        log_error(traceback.format_exc())
+    return removed
+
+
+# ---------------------------------------------------------------- 时间归属
+
+class Usage:
+    """按秒累计前台程序，落盘成每日聚合。"""
+
+    MAX_TITLES = 40
+
+    def __init__(self):
+        self.day = date.today().isoformat()
+        self.apps = {}
+        self.dirty = False
+        self._load()
+
+    def _path(self, day=None):
+        return os.path.join(USAGE_DIR, (day or self.day) + ".json")
+
+    def _load(self):
+        d = load_json(self._path(), {})
+        self.apps = d.get("apps", {}) if isinstance(d, dict) else {}
+        if not isinstance(self.apps, dict):
+            self.apps = {}
+
+    def roll(self):
+        today = date.today().isoformat()
+        if today != self.day:
+            self.save(force=True)
+            self.day = today
+            self.apps = {}
+            self._load()
+
+    def add(self, app, title, sec=1):
+        if not app:
+            return
+        rec = self.apps.setdefault(app, {"sec": 0, "titles": {}})
+        rec["sec"] = int(rec.get("sec", 0)) + sec
+        if title:
+            titles = rec.setdefault("titles", {})
+            titles[title] = int(titles.get(title, 0)) + sec
+        self.dirty = True
+
+    def save(self, force=False):
+        if not self.dirty and not force:
+            return
+        for rec in self.apps.values():
+            titles = rec.get("titles") or {}
+            if len(titles) > self.MAX_TITLES:
+                top = dict(sorted(titles.items(), key=lambda kv: -kv[1])[:self.MAX_TITLES])
+                rest = sum(v for k, v in titles.items() if k not in top)
+                if rest > 0:
+                    top["（其他）"] = top.get("（其他）", 0) + rest
+                rec["titles"] = top
+        try:
+            os.makedirs(USAGE_DIR, exist_ok=True)
+            save_json(self._path(), {"day": self.day, "apps": self.apps})
+            self.dirty = False
+        except Exception:
+            log_error(traceback.format_exc())
+
+
+def load_usage(days=1, end_offset=0):
+    """合并最近 days 天的使用数据；end_offset 表示从几天前开始往前算。"""
+    out = {}
+    newest = date.today() - timedelta(days=max(0, int(end_offset)))
+    for i in range(max(1, int(days))):
+        d = (newest - timedelta(days=i)).isoformat()
+        data = load_json(os.path.join(USAGE_DIR, d + ".json"), {})
+        apps = data.get("apps", {}) if isinstance(data, dict) else {}
+        if not isinstance(apps, dict):
+            continue
+        for app, rec in apps.items():
+            cur = out.setdefault(app, {"sec": 0, "titles": {}})
+            cur["sec"] += int(rec.get("sec", 0) or 0)
+            for k, v in (rec.get("titles") or {}).items():
+                cur["titles"][k] = cur["titles"].get(k, 0) + int(v or 0)
+    return out
+
+
+def log_in_range(days=1, end_offset=0):
+    """按日期取记录。"""
+    newest_d = date.today() - timedelta(days=max(0, int(end_offset)))
+    oldest_d = newest_d - timedelta(days=max(1, int(days)) - 1)
+    lo, hi = oldest_d.isoformat(), newest_d.isoformat()
+    return [r for r in read_log() if lo <= str(r.get("day", "")) <= hi]
+
+
+# ---------------------------------------------------------------- WebDAV
+
+def webdav_test(cfg):
+    """对配置的目录做一次 PROPFIND。返回 (是否可用, 说明)。"""
+    url = str(cfg.get("sync_url") or "").strip()
+    user = str(cfg.get("sync_user") or "").strip()
+    pwd = str(cfg.get("sync_pass") or "")
+    if not url:
+        return False, "先填服务器地址。"
+    if not url.lower().startswith(("http://", "https://")):
+        return False, "地址要以 http:// 或 https:// 开头。"
+    if not url.endswith("/"):
+        url += "/"
+    req = urllib.request.Request(url, method="PROPFIND")
+    req.add_header("Depth", "0")
+    req.add_header("Content-Type", "application/xml; charset=utf-8")
+    if user or pwd:
+        token = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("ascii")
+        req.add_header("Authorization", "Basic " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return True, f"连上了，HTTP {r.status}。"
+    except urllib.error.HTTPError as e:
+        if e.code in (200, 207):
+            return True, f"连上了，HTTP {e.code}。"
+        if e.code == 401:
+            return False, "账号或密码不对（HTTP 401）。"
+        if e.code == 403:
+            return False, "拒绝访问（HTTP 403），检查账号权限。"
+        if e.code == 404:
+            return True, "账号能通过，但这个目录还不存在，同步时会自动建。"
+        if e.code == 405:
+            return True, "服务器不支持 PROPFIND，但地址可达。"
+        return False, f"服务器返回 HTTP {e.code}。"
+    except urllib.error.URLError as e:
+        return False, f"连不上：{e.reason}"
+    except Exception as e:
+        return False, f"出错：{e}"
+
+
+REST_TIPS = [
+    ("喝一杯水", "起身去接水，喝完再回来。别拿咖啡或茶代替水。"),
+    ("看向窗外最远的地方", "找一个能看见的最远物体，盯 20 秒。让眼睛的调焦肌松一下。"),
+    ("闭上眼睛，什么都不看", "闭眼 20 秒。屏幕不会跑，天也不会塌。"),
+    ("站起来走两步", "走到房间另一头再回来。让血往下半身走一走。"),
+    ("慢慢转一下脖子", "向左看到肩膀，停 3 秒；再向右。别用力甩。"),
+    ("把肩膀放下来", "耸肩到耳朵，停 5 秒，然后彻底放松。重复三次。"),
+    ("甩甩手腕", "十指张开再握拳，重复十次。这是给鼠标手的。"),
+    ("深呼吸三次", "吸 4 秒，屏 7 秒，呼 8 秒。就三次，不用更多。"),
+    ("站起来后仰一下", "手扶后腰，慢慢后仰 10 秒，把蜷着的腰打开。"),
+    ("看看远处的人或物", "抬头，视线离开屏幕，看 20 秒。"),
+    ("把手机推到够不着的地方", "顺手推远，再回来坐下。"),
+    ("揉一下眼睛", "闭眼，用指腹轻按眼眶四周。别压眼球。"),
+    ("去趟厕所或倒杯水", "离开这张椅子两分钟，比什么拉伸都管用。"),
+    ("把坐姿调回来", "脚踩实地面，屏幕降到眼睛平视略低。"),
+]
+
+_last_tip = {"i": -1}
+
+
+def pick_rest_tip():
+    """随机挑一条，尽量不和上一条重复。"""
+    n = len(REST_TIPS)
+    if n <= 1:
+        return REST_TIPS[0]
+    i = random.randrange(n)
+    if i == _last_tip["i"]:
+        i = (i + 1) % n
+    _last_tip["i"] = i
+    return REST_TIPS[i]
+
+
+# ---------------------------------------------------------------- 小控件
+
+class Switch(tk.Canvas):
+    """自绘开关，避免各平台 Checkbutton 长得不一样。"""
+
+    def __init__(self, master, var, bg=BG, **kw):
+        super().__init__(master, width=42, height=24, bg=bg,
+                         highlightthickness=0, bd=0, **kw)
+        self.var = var
+        self.configure(cursor="hand2")
+        self.bind("<Button-1>", self._toggle)
+        try:
+            self.var.trace_add("write", lambda *a: self._draw())
+        except Exception:
+            pass
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        on = bool(self.var.get())
+        track = ACCENT if on else "#D1D5DB"
+        self.create_oval(1, 3, 19, 21, fill=track, outline="")
+        self.create_oval(23, 3, 41, 21, fill=track, outline="")
+        self.create_rectangle(10, 3, 32, 21, fill=track, outline="")
+        cx = 32 if on else 10
+        self.create_oval(cx - 8, 4, cx + 8, 20, fill=BG, outline="")
+
+    def _toggle(self, _=None):
+        self.var.set(0 if self.var.get() else 1)
+
+
+class ScrollFrame(tk.Frame):
+    """竖向滚动容器。"""
+
+    def __init__(self, master, bg=BG):
+        super().__init__(master, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.vsb = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vsb.set)
+        self.vsb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner = tk.Frame(self.canvas, bg=bg)
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", self._sync_region)
+        self.canvas.bind("<Configure>", self._sync_width)
+        self.canvas.bind("<Enter>", lambda e: self._bind_wheel(True))
+        self.canvas.bind("<Leave>", lambda e: self._bind_wheel(False))
+
+    def _sync_region(self, _=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _sync_width(self, event):
+        self.canvas.itemconfigure(self._win, width=event.width)
+
+    def _bind_wheel(self, on):
+        seq = "<MouseWheel>"
+        if on:
+            self.canvas.bind_all(seq, self._wheel)
+        else:
+            self.canvas.unbind_all(seq)
+
+    def _wheel(self, event):
+        try:
+            self.canvas.yview_scroll(int(-event.delta / 120), "units")
+        except Exception:
+            pass
+
+
+class PromptText(tk.Text):
+    """带占位符的输入框。占位符不算内容。可选禁止粘贴。"""
+
+    def __init__(self, master, placeholder="", block_paste=True, **kw):
+        super().__init__(master, **kw)
+        self._ph = placeholder
+        self._has_ph = False
+        self.tag_configure("ph", foreground=FAINT)
+        self.bind("<FocusIn>", self._clear_ph)
+        self.bind("<FocusOut>", self._restore_ph)
+        if block_paste:
+            for seq in ("<<Paste>>", "<Control-v>", "<Control-V>",
+                        "<Shift-Insert>", "<Button-3>"):
+                self.bind(seq, lambda e: "break")
+        self._put_ph()
+
+    def _put_ph(self):
+        if not super().get("1.0", "end-1c").strip():
+            super().delete("1.0", "end")
+            super().insert("1.0", self._ph, "ph")
+            self._has_ph = True
+
+    def _clear_ph(self, _=None):
+        if self._has_ph:
+            super().delete("1.0", "end")
+            self._has_ph = False
+
+    def _restore_ph(self, _=None):
+        if not super().get("1.0", "end-1c").strip():
+            self._put_ph()
+
+    def value(self):
+        if self._has_ph:
+            return ""
+        return super().get("1.0", "end-1c").strip()
+
+    def reset(self, placeholder=None):
+        if placeholder is not None:
+            self._ph = placeholder
+        super().delete("1.0", "end")
+        self._has_ph = False
+        self._put_ph()
+
+
+def bind_tree(widget, seq, func):
+    widget.bind(seq, func)
+    for child in widget.winfo_children():
+        bind_tree(child, seq, func)
+
+
+def button(parent, text, cmd, kind="ghost", **kw):
+    if kind == "primary":
+        cfg = dict(bg=ACCENT, fg=BG, activebackground=ACCENT_DARK,
+                   activeforeground=BG, font=(FONT, 10))
+    elif kind == "danger":
+        cfg = dict(bg=BG, fg=DANGER, activebackground=SOFT,
+                   activeforeground=DANGER, font=(FONT, 9),
+                   highlightbackground=LINE, highlightthickness=1)
+    else:
+        cfg = dict(bg="#EFF2F6", fg=INK, activebackground="#E2E7EE", activeforeground=INK,
+                   font=(FONT, 9), highlightbackground="#DDE2E9", highlightthickness=1)
+    cfg.update(kw)
+    return tk.Button(parent, text=text, command=cmd, relief="flat", bd=0,
+                     cursor="hand2", padx=16, pady=7, **cfg)
+
+
+# ---------------------------------------------------------------- 弹窗
+
+POPUP_W = 620
+POPUP_H = 500
+
+
+class AskPopup:
+    def __init__(self, app, reason="normal", rec_id=None, shot=None):
+        self.app = app
+        self.reason = reason
+        self.rec_id = rec_id or uuid.uuid4().hex[:16]
+        self.shot = shot or ""
+        self.mode = "normal"
+        self.closed = False
+        self.tip = pick_rest_tip() if reason == "rest" else None
+        self.opened_at = time.time()
+        cooldown = float(app.cfg.get("cooldown_seconds", 0) or 0)
+        self.ready_at = self.opened_at + max(0.0, cooldown)
+        self._after_id = None
+
+        w = tk.Toplevel(app.root)
+        self.win = w
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg=EDGE)
+        w.protocol("WM_DELETE_WINDOW", lambda: None)
+        w.bind("<Escape>", lambda e: "break")
+        w.bind("<Alt-F4>", lambda e: "break")
+
+        sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
+        x = max(0, (sw - POPUP_W) // 2)
+        y = max(0, int((sh - POPUP_H) * 0.26))
+        w.geometry(f"{POPUP_W}x{POPUP_H}+{x}+{y}")
+
+        shell = tk.Frame(w, bg=BG)
+        shell.pack(fill="both", expand=True, padx=1, pady=1)
+
+        tk.Frame(shell, bg=ACCENT, height=5).pack(fill="x")
+
+        body = tk.Frame(shell, bg=BG)
+        body.pack(fill="both", expand=True, padx=32, pady=(20, 18))
+
+        self.title_lbl = tk.Label(
+            body, text=self._title(), bg=BG, fg=INK,
+            font=(FONT, 19, "bold"), anchor="w",
+        )
+        self.title_lbl.pack(fill="x")
+
+        self.sub_lbl = tk.Label(
+            body, text=self._subtitle(), bg=BG, fg=MUTED,
+            font=(FONT, 10), anchor="w", justify="left",
+        )
+        self.sub_lbl.pack(fill="x", pady=(7, 0))
+
+        last = app.last_answer
+        if self.tip:
+            card = tk.Frame(body, bg="#FFF6E5")
+            card.pack(fill="x", pady=(14, 0))
+            tk.Label(card, text="现在做这件事", bg="#FFF6E5", fg="#8A5200",
+                     font=(FONT, 8), anchor="w").pack(fill="x", padx=14, pady=(10, 0))
+            tk.Label(card, text=self.tip[0], bg="#FFF6E5", fg="#7A3E00",
+                     font=(FONT, 15, "bold"), anchor="w").pack(fill="x", padx=14, pady=(2, 0))
+            tk.Label(card, text=self.tip[1], bg="#FFF6E5", fg="#8A5200",
+                     font=(FONT, 9), anchor="w", justify="left",
+                     wraplength=POPUP_W - 110).pack(fill="x", padx=14, pady=(4, 12))
+        elif last:
+            prev = tk.Frame(body, bg=SOFT)
+            prev.pack(fill="x", pady=(14, 0))
+            tk.Label(prev, text="上次你说", bg=SOFT, fg=FAINT,
+                     font=(FONT, 8), anchor="w").pack(fill="x", padx=12, pady=(8, 0))
+            tk.Label(prev, text=self._clip(last, 46) + "　·　" + fmt_ago(app.last_ts),
+                     bg=SOFT, fg=MUTED, font=(FONT, 10), anchor="w",
+                     justify="left", wraplength=POPUP_W - 100).pack(
+                fill="x", padx=12, pady=(2, 9))
+
+        box = tk.Frame(body, bg=BG, highlightbackground=LINE, highlightthickness=1)
+        box.pack(fill="x", pady=(16, 0))
+        self.text = PromptText(
+            box, placeholder="在这里写。",
+            block_paste=bool(app.cfg.get("block_paste", 1)),
+            font=(FONT, 12), fg=INK, bg=BG, relief="flat",
+            wrap="word", height=4, width=1, padx=12, pady=10,
+            insertbackground=INK, highlightthickness=0,
+        )
+        self.text.pack(fill="both", expand=True)
+        self.text.bind("<KeyRelease>", self._on_key)
+        self.text.bind("<Control-Return>", lambda e: (self.submit("normal"), "break")[1])
+
+        self.hint = tk.Label(
+            body, text=self._hint_text(), bg=BG, fg=MUTED,
+            font=(FONT, 10), anchor="w", justify="left",
+            wraplength=POPUP_W - 80,
+        )
+        self.hint.pack(fill="x", pady=(9, 0))
+
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x", pady=(14, 0))
+
+        self.btn = tk.Button(
+            row, text="说清楚了，继续", command=lambda: self.submit("normal"),
+            bg=ACCENT, fg=BG, activebackground=ACCENT_DARK, activeforeground=BG,
+            font=(FONT, 11), relief="flat", bd=0, cursor="hand2",
+            padx=24, pady=9,
+        )
+        self.btn.pack(side="left")
+
+        self.moyu_btn = tk.Button(
+            row, text="我承认在摸鱼", command=self.switch_to_moyu,
+            bg=SOFT, fg=MUTED, activebackground=LINE, activeforeground=INK,
+            font=(FONT, 10), relief="flat", bd=0, cursor="hand2",
+            padx=16, pady=9,
+        )
+        if not self.tip:
+            self.moyu_btn.pack(side="left", padx=(10, 0))
+
+        self.counter = tk.Label(
+            row, text="0 字", bg=BG, fg=FAINT, font=(FONT, 10), anchor="e",
+        )
+        self.counter.pack(side="right")
+
+        tk.Label(
+            body, text="关不掉。写完就放你走。",
+            bg=BG, fg=MUTED, font=(FONT, 9), anchor="w",
+        ).pack(fill="x", pady=(14, 0))
+
+        if app.cfg.get("sound", 1):
+            beep(app.cfg)
+
+        self._on_key()
+        self._tick_cooldown()
+        w.after(90, self._grab_focus)
+
+    @staticmethod
+    def _clip(s, n):
+        s = (s or "").replace("\n", " ").strip()
+        return s if len(s) <= n else s[:n] + "…"
+
+    def _title(self):
+        if self.reason == "rest":
+            return "该起身了"
+        if self.reason == "long":
+            return "你还没起身"
+        if self.reason == "back":
+            return "回来了，把刚才那条补上"
+        return "现在，你在做什么？"
+
+    def _subtitle(self):
+        n = self.app.day_count + 1
+        if self.reason in ("long", "rest"):
+            span = fmt_span(self.app.session_seconds())
+            return f"你已经连续用了 {span} · 今天第 {n} 次"
+        span = fmt_span(self.app.session_seconds())
+        return f"今天第 {n} 次 · 这一轮已经连续用了 {span}"
+
+    def _hint_text(self):
+        if self.reason == "rest":
+            return "回来之后，写一句你做了什么。写完就放你走。"
+        if self.reason == "long":
+            return "写一句：你打算什么时候起来，起来做什么。"
+        if self.reason == "back":
+            return "写一句：刚才那段时间，你实际在做什么。"
+        return "写一句话：你在做什么，以及为什么现在必须做它。"
+
+    def _grab_focus(self):
+        if self.closed:
+            return
+        force_foreground(self.win)
+        self.win.lift()
+        self.text.focus_force()
+
+    def _on_key(self, _=None):
+        n = len(self.text.value())
+        self.counter.config(text=f"{n} 字")
+        ready = time.time() >= self.ready_at
+        minc = int(self.app.cfg["min_chars"])
+        self.btn.config(bg=ACCENT if (n >= minc and ready) else ACCENT_PALE)
+
+    def _tick_cooldown(self):
+        if self.closed:
+            return
+        left = self.ready_at - time.time()
+        if left > 0.02:
+            txt = ("等 %.1f 秒" % left) if left < 10 else ("等 %d 秒" % int(left + 0.999))
+            self.btn.config(text=txt, state="disabled")
+            self.hint.config(text="先想清楚。倒计时结束才放行。", fg=MUTED)
+        else:
+            if str(self.btn.cget("state")) == "disabled":
+                self.btn.config(text="说清楚了，继续", state="normal")
+                self.hint.config(text=self._hint_text(), fg=MUTED)
+        self._on_key()
+        self._after_id = self.win.after(100, self._tick_cooldown)
+
+    def switch_to_moyu(self):
+        self.mode = "moyu"
+        self.title_lbl.config(text="行。那接下来 10 分钟，你打算做什么？")
+        self.hint.config(
+            text="别写「继续摸鱼」。写一件具体的小事，5 分钟内能开始的。", fg=MUTED
+        )
+        self.moyu_btn.pack_forget()
+        self.text.reset("比如：把那份表格的第一列填完。")
+        self.counter.config(text="0 字")
+        self.btn.config(bg=ACCENT_PALE)
+        self.text.focus_force()
+
+    def submit(self, kind="normal"):
+        txt = self.text.value()
+        minc = int(self.app.cfg["min_chars"])
+
+        if time.time() < self.ready_at:
+            self.hint.config(text="倒计时还没走完。", fg=DANGER)
+            self.text.focus_force()
+            return
+
+        if len(txt) < minc:
+            self.hint.config(text=f"太短了。至少写 {minc} 个字。", fg=DANGER)
+            self.text.focus_force()
+            return
+
+        self.app.record(txt, self.mode, trigger_ts=self.opened_at,
+                        rec_id=self.rec_id, shot=self.shot)
+        self.close()
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        if self._after_id:
+            try:
+                self.win.after_cancel(self._after_id)
+            except Exception:
+                pass
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        self.app.popup = None
+
+
+# ---------------------------------------------------------------- 状态小条
+
+class Pill:
+    W, H = 214, 40
+
+    def __init__(self, app):
+        self.app = app
+        w = tk.Toplevel(app.root)
+        self.win = w
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.attributes("-alpha", 0.94)
+        w.configure(bg=EDGE)
+
+        sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
+        w.geometry(f"{self.W}x{self.H}+{sw - self.W - 26}+{sh - self.H - 74}")
+
+        outer = tk.Frame(w, bg=BG)
+        outer.pack(fill="both", expand=True, padx=1, pady=1)
+
+        self.dot = tk.Label(outer, text="●", fg=OK, bg=BG, font=(FONT, 9))
+        self.dot.pack(side="left", padx=(12, 0))
+
+        self.lbl = tk.Label(
+            outer, text="准备中", fg=INK, bg=BG, font=(FONT, 9), anchor="w"
+        )
+        self.lbl.pack(side="left", padx=(7, 0), fill="x", expand=True)
+
+        self._drag = None
+        self._moved = False
+        bind_tree(w, "<Button-1>", self._press)
+        bind_tree(w, "<B1-Motion>", self._drag_move)
+        bind_tree(w, "<ButtonRelease-1>", self._release)
+        bind_tree(w, "<Button-3>", self._menu)
+
+    def _press(self, e):
+        self._drag = (e.x_root - self.win.winfo_x(), e.y_root - self.win.winfo_y())
+        self._moved = False
+
+    def _drag_move(self, e):
+        if not self._drag:
+            return
+        self._moved = True
+        self.win.geometry(f"+{e.x_root - self._drag[0]}+{e.y_root - self._drag[1]}")
+
+    def _release(self, _=None):
+        if not self._moved:
+            self.app.open_history()
+        self._drag = None
+
+    def _menu(self, e):
+        m = tk.Menu(self.win, tearoff=0)
+        m.add_command(label="看记录", command=self.app.open_history)
+        m.add_command(label="行为统计", command=self.app.open_usage)
+        m.add_command(label="立刻问我一次", command=lambda: self.app.show_popup("normal"))
+        m.add_separator()
+        if self.app.cfg.get("enabled", 1):
+            m.add_command(label="关闭提醒（总开关）", command=self.app.set_enabled_false)
+        else:
+            m.add_command(label="打开提醒（总开关）", command=self.app.set_enabled_true)
+        m.add_separator()
+        m.add_command(label="暂停 30 分钟", command=lambda: self.app.pause(30))
+        m.add_command(label="暂停 1 小时", command=lambda: self.app.pause(60))
+        m.add_command(label="今天不再提醒", command=lambda: self.app.pause_until_tomorrow())
+        m.add_command(label="立刻恢复", command=lambda: self.app.pause(0))
+        m.add_separator()
+        m.add_command(label="设置", command=self.app.open_settings)
+        m.add_command(label="退出", command=self.app.quit)
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def set_state(self, text, color):
+        try:
+            if not self.win.winfo_exists():
+                return
+            self.lbl.config(text=text)
+            self.dot.config(fg=color)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------- 主程序
+
+class AskMe:
+    def __init__(self):
+        ensure_dirs()
+        self.cfg = load_cfg()
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.root.title(TITLE)
+        try:
+            self.root.option_add("*Font", (FONT, 9))
+        except Exception:
+            pass
+
+        self._closing = False
+        self.popup = None
+        self.history = None
+        self.settings = None
+        self.usage_win = None
+        self.last_answer = ""
+        self.last_ts = 0
+        self.day = date.today().isoformat()
+        self.active = 0
+        self.since_last = 0
+        self.next_due = int(self.cfg["first_minutes"]) * 60
+        self.day_count = 0
+        self._ticks = 0
+        self.session_start = None
+        self.long_alerted = False
+        self.pending = None
+        self.off_screen_since = None
+        self.usage = Usage()
+        self._last_usage_save = 0
+        self._cleanup_done = False
+
+        self._restore_state()
+        self.pill = Pill(self)
+        self.root.after(1000, self.tick)
+        self.root.after(1200, self._startup_chores)
+
+    def _startup_chores(self):
+        try:
+            cleanup_shots(self.cfg.get("shot_keep_days", 30))
+            self._cleanup_done = True
+        except Exception:
+            log_error(traceback.format_exc())
+
+    # ---------------- 状态存取
+
+    def _restore_state(self):
+        st = load_json(STATE_PATH, {})
+        if st.get("day") == self.day:
+            self.active = int(st.get("active", 0))
+            self.since_last = int(st.get("since_last", 0))
+            nd = int(st.get("next_due", 0) or 0)
+            if nd > 0:
+                self.next_due = nd
+            ss = st.get("session_start")
+            if ss:
+                try:
+                    self.session_start = float(ss)
+                except Exception:
+                    pass
+            self.long_alerted = bool(st.get("long_alerted", False))
+        recs = [r for r in read_log() if r.get("day") == self.day]
+        self.day_count = len(recs)
+        if recs:
+            self.last_answer = recs[-1].get("answer", "")
+            self.last_ts = float(recs[-1].get("ts", 0))
+
+    def _save_state(self):
+        save_json(STATE_PATH, {
+            "day": self.day,
+            "active": self.active,
+            "since_last": self.since_last,
+            "next_due": self.next_due,
+            "session_start": self.session_start,
+            "long_alerted": self.long_alerted,
+        })
+
+    def session_seconds(self):
+        if self.session_start:
+            return max(0, time.time() - self.session_start)
+        return max(0, self.active)
+
+    # ---------------- 主循环
+
+    def tick(self):
+        if self._closing:
+            return
+        try:
+            self._tick_once()
+        except Exception:
+            log_error(traceback.format_exc())
+        if self._closing:
+            return
+        try:
+            if self.root.winfo_exists():
+                self.root.after(1000, self.tick)
+        except Exception:
+            pass
+
+    def _decide(self, now):
+        """返回 (in_use, 状态标签, 颜色)。"""
+        if not int(self.cfg.get("enabled", 1)):
+            return False, "已关闭", FAINT
+        if now < float(self.cfg.get("paused_until", 0) or 0):
+            left = int(float(self.cfg["paused_until"]) - now)
+            return False, f"已暂停 {max(0, left) // 60} 分", FAINT
+        if in_dnd(self.cfg):
+            return False, "免打扰时段", FAINT
+
+        locked = is_locked()
+        if not locked:
+            self.off_screen_since = None
+            if not int(self.cfg.get("idle_stop_enabled", 1)):
+                return True, "", OK
+            away = float(self.cfg.get("away_minutes", 10)) * 60
+            if idle_seconds() < away or is_fullscreen():
+                return True, "", OK
+            return False, "你不在，已停表", FAINT
+
+        # 屏幕黑着
+        if not int(self.cfg.get("watch_off_screen", 0)):
+            self.off_screen_since = None
+            return False, "锁屏，已停表", FAINT
+        if self.off_screen_since is None:
+            self.off_screen_since = now
+        grace = float(self.cfg.get("off_screen_grace_minutes", 10)) * 60
+        if now - self.off_screen_since < grace:
+            left = int((grace - (now - self.off_screen_since)) / 60) + 1
+            return True, f"锁屏，还等 {left} 分", WARN
+        return False, "锁屏太久，已停表", FAINT
+
+    def _tick_once(self):
+        now = time.time()
+        today = date.today().isoformat()
+        if today != self.day:
+            self.day = today
+            self.active = 0
+            self.since_last = 0
+            self.day_count = 0
+            self.long_alerted = False
+            self.next_due = int(self.cfg["first_minutes"]) * 60
+            self.usage.roll()
+            if self._cleanup_done:
+                cleanup_shots(self.cfg.get("shot_keep_days", 30))
+
+        was_locked = self._was_locked
+        in_use, label, color = self._decide(now)
+        locked = is_locked()
+
+        if in_use and self.popup is None:
+            self.active += 1
+            self.since_last += 1
+            if self.session_start is None:
+                self.session_start = now
+            self._sample_usage()
+        elif not in_use:
+            self.session_start = None
+            self.long_alerted = False
+
+        if self.usage.dirty and now - self._last_usage_save >= 60:
+            self.usage.save()
+            self._last_usage_save = now
+
+        # 到点
+        if in_use and self.since_last >= self.next_due and self.popup is None:
+            if locked:
+                if self.cfg.get("alert_when_off_screen", 1) and self.cfg.get("sound", 1):
+                    beep(self.cfg)
+                self.pending = {"trigger_ts": now, "reason": "back"}
+                self._roll_next()
+            else:
+                self.show_popup("normal")
+
+        # 解锁后补弹
+        if was_locked and not locked and self.pending and self.popup is None:
+            p = self.pending
+            self.pending = None
+            if in_use:
+                self.show_popup(p.get("reason", "back"))
+
+        # 连续使用太久
+        if (in_use and not self.long_alerted
+                and int(self.cfg.get("long_session_alert", 0))
+                and self.session_start
+                and now - self.session_start >= float(self.cfg.get("long_session_minutes", 180)) * 60
+                and self.popup is None):
+            self.long_alerted = True
+            if locked:
+                if self.cfg.get("alert_when_off_screen", 1) and self.cfg.get("sound", 1):
+                    beep(self.cfg)
+                self.pending = {"trigger_ts": now, "reason": "rest"}
+            else:
+                self.show_popup("rest")
+
+        self._was_locked = locked
+        self._ticks += 1
+        if self._ticks % 30 == 0:
+            self._save_state()
+
+        self._refresh_pill(in_use, label, color)
+
+    _was_locked = False
+
+    def _refresh_pill(self, in_use, label, color):
+        if self.popup is not None:
+            self.pill.set_state("正在被问", WARN)
+            return
+        if not in_use:
+            self.pill.set_state(label or "已停表", color)
+            return
+        used = self.session_seconds()
+        tail = fmt_span(used) if used >= 60 else "刚开始"
+        self.pill.set_state(f"在计时 · 这一轮 {tail}", color)
+
+    def _roll_next(self):
+        lo = int(self.cfg["min_minutes"]) * 60
+        hi = max(lo + 60, int(self.cfg["max_minutes"]) * 60)
+        self.next_due = random.randint(lo, hi)
+        self.since_last = 0
+
+    def _sample_usage(self):
+        if not int(self.cfg.get("track_app", 1)):
+            return
+        try:
+            app, title = foreground_app()
+            if not app:
+                return
+            if not int(self.cfg.get("track_titles", 1)):
+                title = ""
+            self.usage.add(app, title[:120], 1)
+        except Exception:
+            log_error(traceback.format_exc())
+
+    # ---------------- 弹窗与记录
+
+    def show_popup(self, reason="normal"):
+        if self.popup is not None:
+            return
+        rid = uuid.uuid4().hex[:16]
+        shot = ""
+        if int(self.cfg.get("shot_enabled", 1)):
+            try:
+                p = shot_path_for(rid)
+                if capture_jpeg(p, self.cfg.get("shot_width", 800),
+                                self.cfg.get("shot_quality", 60)):
+                    shot = os.path.relpath(p, DATA_DIR)
+                    ensure_thumb(shot)
+            except Exception:
+                log_error(traceback.format_exc())
+        self.popup = AskPopup(self, reason=reason, rec_id=rid, shot=shot)
+
+    def record(self, text, kind, trigger_ts=None, rec_id=None, shot=None):
+        self.last_answer = text
+        self.last_ts = time.time()
+        self.day_count += 1
+        delay = int(max(0, self.last_ts - trigger_ts)) if trigger_ts else 0
+        append_log({
+            "id": rec_id or uuid.uuid4().hex[:16],
+            "ts": self.last_ts,
+            "time": datetime.now().strftime("%H:%M"),
+            "day": date.today().isoformat(),
+            "answer": text,
+            "kind": kind,
+            "active": self.active,
+            "span": int(self.since_last),
+            "n": self.day_count,
+            "delay": delay,
+            "shot": shot or "",
+            "src": "pc",
+        })
+        self._roll_next()
+        self._save_state()
+
+    def pause(self, minutes):
+        self.cfg["paused_until"] = time.time() + minutes * 60 if minutes > 0 else 0
+        save_cfg(self.cfg)
+
+    def pause_until_tomorrow(self):
+        t = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        self.cfg["paused_until"] = t.timestamp()
+        save_cfg(self.cfg)
+
+    def set_enabled_false(self):
+        self.cfg["enabled"] = 0
+        save_cfg(self.cfg)
+
+    def set_enabled_true(self):
+        self.cfg["enabled"] = 1
+        save_cfg(self.cfg)
+
+    # ---------------- 面板
+
+    def open_history(self):
+        if self.history is not None and self.history.win.winfo_exists():
+            self.history.win.lift()
+            self.history.win.focus_force()
+            self.history.reload()
+            return
+        self.history = HistoryWindow(self)
+
+    def open_settings(self):
+        if self.settings is not None and self.settings.win.winfo_exists():
+            self.settings.win.lift()
+            self.settings.win.focus_force()
+            return
+        self.settings = SettingsWindow(self)
+
+    def open_usage(self):
+        if self.usage_win is not None and self.usage_win.win.winfo_exists():
+            self.usage_win.win.lift()
+            self.usage_win.win.focus_force()
+            self.usage_win.reload()
+            return
+        self.usage_win = UsageWindow(self)
+
+    def apply_settings(self, new_cfg):
+        old_due = self.next_due
+        self.cfg.update(new_cfg)
+        save_cfg(self.cfg)
+        lo = int(self.cfg["min_minutes"]) * 60
+        hi = max(lo + 60, int(self.cfg["max_minutes"]) * 60)
+        if not (lo <= old_due <= hi):
+            self.next_due = random.randint(lo, hi)
+            self.since_last = 0
+
+    def quit(self):
+        self._closing = True
+        self._save_state()
+        try:
+            self.usage.save(force=True)
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+
+# ---------------------------------------------------------------- 历史窗口
+
+class HistoryWindow:
+    def __init__(self, app):
+        self.app = app
+        w = tk.Toplevel(app.root)
+        self.win = w
+        w.title(TITLE + " · 记录")
+        w.configure(bg=SOFT)
+        w.geometry("820x700")
+        w.minsize(720, 560)
+        w.protocol("WM_DELETE_WINDOW", self.close)
+        self._heat_recs = []
+        self._imgs = []
+        self._img_count = 0
+
+        head = tk.Frame(w, bg=BG)
+        head.pack(fill="x")
+        inner = tk.Frame(head, bg=BG)
+        inner.pack(fill="x", padx=26, pady=(18, 14))
+        tk.Label(inner, text="记录", bg=BG, fg=INK,
+                 font=(FONT, 16, "bold"), anchor="w").pack(side="left")
+        self.summary = tk.Label(inner, text="", bg=BG, fg=MUTED,
+                                font=(FONT, 9), anchor="w")
+        self.summary.pack(side="left", padx=(14, 0), pady=(4, 0))
+
+        self.q = tk.StringVar()
+        ent = tk.Entry(inner, textvariable=self.q, font=(FONT, 10), relief="flat",
+                       bg=SOFT, fg=INK, width=22, highlightbackground=LINE,
+                       highlightthickness=1)
+        ent.pack(side="right", ipady=5)
+        ent.bind("<KeyRelease>", lambda e: self.reload())
+        tk.Label(inner, text="搜索", bg=BG, fg=FAINT,
+                 font=(FONT, 9)).pack(side="right", padx=(0, 8))
+
+        tk.Frame(w, bg=LINE, height=1).pack(fill="x")
+
+        bar = tk.Frame(w, bg=SOFT)
+        bar.pack(side="bottom", fill="x", padx=26, pady=(10, 18))
+        button(bar, "导出 CSV", self.export_csv).pack(side="left")
+        button(bar, "导出 JSON", self.export_json).pack(side="left", padx=(8, 0))
+        button(bar, "行为统计", self.app.open_usage).pack(side="left", padx=(8, 0))
+        button(bar, "设置", self.app.open_settings).pack(side="left", padx=(8, 0))
+        button(bar, "关闭", self.close).pack(side="right")
+
+        self.heat = tk.Canvas(w, bg=BG, height=104, highlightthickness=0, bd=0)
+        self.heat.pack(side="bottom", fill="x", padx=26)
+        tk.Label(w, text="一天里被问的时刻", bg=SOFT, fg=MUTED,
+                 font=(FONT, 9), anchor="w").pack(side="bottom", fill="x",
+                                                 padx=28, pady=(12, 4))
+
+        body = tk.Frame(w, bg=BG)
+        body.pack(fill="both", expand=True, padx=26, pady=(14, 0))
+        body.configure(highlightbackground=LINE, highlightthickness=1)
+        self.txt = tk.Text(body, bg=BG, fg=INK, font=(FONT, 10), relief="flat",
+                           wrap="word", padx=16, pady=12, width=1,
+                           insertbackground=BG, highlightthickness=0)
+        sb = tk.Scrollbar(body, command=self.txt.yview)
+        self.txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.txt.pack(side="left", fill="both", expand=True)
+
+        self.txt.tag_configure("day", foreground=ACCENT_DARK, font=(FONT, 10, "bold"),
+                               spacing1=10, spacing3=4)
+        self.txt.tag_configure("time", foreground=ACCENT, font=(FONT, 9, "bold"))
+        self.txt.tag_configure("body", foreground=INK, font=(FONT, 10),
+                               lmargin1=0, lmargin2=54, spacing3=6)
+        self.txt.tag_configure("dim", foreground=FAINT, font=(FONT, 8))
+        self.txt.tag_configure("moyu", foreground=WARN, font=(FONT, 8, "bold"))
+        self.txt.tag_configure("rest", foreground=OK, font=(FONT, 8, "bold"))
+        self.txt.tag_configure("dup1", foreground=DUP1)
+        self.txt.tag_configure("dup2", foreground=DUP2)
+        self.txt.tag_configure("empty", foreground=FAINT, font=(FONT, 10))
+        self.txt.config(state="disabled")
+        self.heat.bind("<Configure>", lambda e: self._heat(self._heat_recs))
+
+        self.reload()
+        w.after(120, lambda: force_foreground(w))
+
+    # -------- 数据
+
+    def _all(self):
+        return read_log()
+
+    def reload(self):
+        recs = self._all()
+        kw = self.q.get().strip().lower()
+        if kw:
+            recs = [r for r in recs if kw in str(r.get("answer", "")).lower()]
+        self._render(recs, bool(kw))
+        self._summary()
+        try:
+            self.win.update_idletasks()
+        except Exception:
+            pass
+        self._heat(self._all())
+
+    def _summary(self):
+        recs = self._all()
+        today = date.today().isoformat()
+        t = [r for r in recs if r.get("day") == today]
+        week_ago = (date.today() - timedelta(days=6)).isoformat()
+        wrecs = [r for r in recs if str(r.get("day", "")) >= week_ago]
+        days = len({r.get("day") for r in wrecs}) or 1
+        total = len(recs)
+        self.summary.config(
+            text=f"共 {total} 条 · 今天 {len(t)} 次 · 近 7 天日均 {len(wrecs) / days:.1f} 次")
+
+    def _render(self, recs, filtered=False):
+        self.txt.config(state="normal")
+        self.txt.delete("1.0", "end")
+        self._imgs = []
+        self._img_count = 0
+
+        if not recs:
+            if filtered:
+                self.txt.insert("end", "\n没有匹配的记录。\n", "empty")
+            else:
+                self.txt.insert("end", "\n还没有记录。\n\n", "empty")
+                self.txt.insert("end", "开着电脑待着就行。它会在你干活的时候，挑一个你想不到的时刻出现。",
+                                "empty")
+            self.txt.config(state="disabled")
+            return
+
+        seen = {}
+        warn_n = int(self.app.cfg.get("repeat_warn", 2) or 2)
+        alert_n = int(self.app.cfg.get("repeat_alert", 3) or 3)
+        cur_day = None
+        for r in recs:
+            day = str(r.get("day", ""))
+            if day != cur_day:
+                cur_day = day
+                try:
+                    d = datetime.strptime(day, "%Y-%m-%d").date()
+                    label = d.strftime("%Y 年 %m 月 %d 日")
+                    wd = "一二三四五六日"[d.weekday()]
+                    label += f"　周{wd}"
+                except Exception:
+                    label = day
+                self.txt.insert("end", label + "\n", "day")
+
+            self.txt.insert("end", f"{r.get('time', '--:--')}   ", "time")
+            if r.get("kind") == "moyu":
+                self.txt.insert("end", "摸鱼  ", "moyu")
+            elif r.get("kind") == "rest":
+                self.txt.insert("end", "起身  ", "rest")
+
+            ans = str(r.get("answer", "")).strip()
+            tag = "body"
+            if ans:
+                seen[ans] = seen.get(ans, 0) + 1
+                if seen[ans] >= alert_n:
+                    tag = "body dup2"
+                elif seen[ans] >= warn_n:
+                    tag = "body dup1"
+            self.txt.insert("end", ans + "\n", tag)
+            self._maybe_image(r)
+
+        self.txt.config(state="disabled")
+        self.txt.see("1.0")
+
+    def _maybe_image(self, r):
+        shot = str(r.get("shot") or "")
+        if not shot or self._img_count >= 150:
+            return
+        png = ensure_thumb(shot)
+        if not png:
+            return
+        try:
+            img = tk.PhotoImage(file=png)
+        except Exception:
+            return
+        self._imgs.append(img)
+        self._img_count += 1
+
+        holder = tk.Frame(self.txt, bg="#D3DAE3", padx=1, pady=1, cursor="hand2")
+        lbl = tk.Label(holder, image=img, bd=0, bg=BG)
+        lbl.pack()
+
+        def open_shot(_=None, s=shot):
+            ShotViewer(self.app, s)
+
+        holder.bind("<Button-1>", open_shot)
+        lbl.bind("<Button-1>", open_shot)
+
+        self.txt.insert("end", "   ")
+        self.txt.window_create("end", window=holder, pady=4)
+        self.txt.insert("end", "\n")
+
+    def _heat(self, recs):
+        self._heat_recs = recs
+        self.heat.delete("all")
+        try:
+            w = max(400, self.heat.winfo_width())
+        except Exception:
+            w = 740
+        counts = [0] * 24
+        for r in recs:
+            try:
+                h = datetime.fromtimestamp(float(r.get("ts", 0))).hour
+                counts[h] += 1
+            except Exception:
+                pass
+        peak = max(counts) or 1
+        pad_l, pad_r = 6, 6
+        slot = (w - pad_l - pad_r) / 24.0
+        bar_w = max(6, slot - 4)
+        base_y = 76
+        for i, c in enumerate(counts):
+            x = pad_l + i * slot + 2
+            h = 0 if c == 0 else max(3, int(round(c / peak * 52)))
+            color = "#D6E4F2" if c == 0 else (ACCENT if c < peak else ACCENT_DARK)
+            self.heat.create_rectangle(x, base_y - h, x + bar_w, base_y,
+                                       fill=color, outline="")
+            if c:
+                self.heat.create_text(x + bar_w / 2, base_y - h - 8, text=str(c),
+                                      fill=MUTED, font=(FONT, 7))
+        self.heat.create_line(pad_l, base_y + 1, w - pad_r, base_y + 1, fill=LINE)
+        for i in range(24):
+            if i % 6 == 0:
+                x = pad_l + i * slot + 2 + bar_w / 2
+                self.heat.create_text(x, base_y + 16, text=f"{i}时",
+                                      fill=FAINT, font=(FONT, 7))
+
+    # -------- 导出
+
+    def export_csv(self):
+        import csv
+        path = os.path.join(DATA_DIR, f"记录-{date.today().isoformat()}.csv")
+        recs = self._all()
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as f:
+                wr = csv.writer(f)
+                wr.writerow(["日期", "时间", "回答", "类型", "响应延迟秒", "来源"])
+                for r in recs:
+                    wr.writerow([r.get("day", ""), r.get("time", ""),
+                                 r.get("answer", ""), r.get("kind", ""),
+                                 r.get("delay", ""), r.get("src", "pc")])
+        except Exception:
+            log_error(traceback.format_exc())
+            messagebox_info(self.win, "导出失败", "写文件出错，详见 error.log")
+            return
+        messagebox_info(self.win, "导出好了", f"{len(recs)} 条记录已存到:\n{path}")
+
+    def export_json(self):
+        path = os.path.join(DATA_DIR, f"记录-{date.today().isoformat()}.json")
+        recs = self._all()
+        save_json(path, recs)
+        messagebox_info(self.win, "导出好了", f"{len(recs)} 条记录已存到:\n{path}")
+
+    def close(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        self.app.history = None
+
+
+# ---------------------------------------------------------------- 看截图
+
+class ShotViewer:
+    def __init__(self, app, shot_rel):
+        self.app = app
+        self.shot = shot_rel
+        self.src = os.path.join(DATA_DIR, shot_rel)
+        self.tmp = os.path.join(tempfile.gettempdir(),
+                                "grill-view-%s.png" % uuid.uuid4().hex[:8])
+
+        w = tk.Toplevel(app.root)
+        self.win = w
+        w.title(TITLE + " · 截图")
+        w.configure(bg=SOFT)
+        w.protocol("WM_DELETE_WINDOW", self.close)
+        self.photo = None
+
+        if os.path.exists(self.src) and image_to_png(self.src, self.tmp, 1200):
+            try:
+                self.photo = tk.PhotoImage(file=self.tmp)
+            except Exception:
+                self.photo = None
+
+        if self.photo:
+            pw, ph = self.photo.width(), self.photo.height()
+            w.geometry("%dx%d" % (min(1260, pw + 48), min(920, ph + 110)))
+            tk.Label(w, image=self.photo, bg=SOFT, bd=0).pack(
+                padx=24, pady=(20, 10))
+        else:
+            tk.Label(w, text="这张图找不到了，可能已经被清理。",
+                     bg=SOFT, fg=MUTED, font=(FONT, 10)).pack(padx=40, pady=(50, 10))
+
+        bar = tk.Frame(w, bg=SOFT)
+        bar.pack(fill="x", padx=24, pady=(0, 16))
+        button(bar, "打开原文件", self.open_file).pack(side="left")
+        button(bar, "删除这张", self.delete).pack(side="left", padx=(8, 0))
+        button(bar, "关闭", self.close).pack(side="right")
+
+        w.after(120, lambda: force_foreground(w))
+
+    def open_file(self):
+        try:
+            os.startfile(self.src)
+        except Exception:
+            messagebox_info(self.win, "打不开", self.src)
+
+    def delete(self):
+        from tkinter import messagebox
+        if not messagebox.askyesno("删除截图", "删掉这张图？记录本身会保留。",
+                                   parent=self.win):
+            return
+        for p in (self.src, thumb_path_for(self.shot), self.tmp):
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                log_error(traceback.format_exc())
+        if self.app.history is not None and self.app.history.win.winfo_exists():
+            self.app.history.reload()
+        self.close()
+
+    def close(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        try:
+            if os.path.exists(self.tmp):
+                os.remove(self.tmp)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------- 时间分布
+
+class UsageWindow:
+    MODES = [("today", "今天", 1, 0), ("yesterday", "昨天", 1, 1),
+             ("week", "近 7 天", 7, 0)]
+    BAR_W = 640
+
+    def __init__(self, app):
+        self.app = app
+        self.mode = "today"
+        self.view = "app"
+        w = tk.Toplevel(app.root)
+        self.win = w
+        w.title(TITLE + " · 行为统计")
+        w.configure(bg=SOFT)
+        w.geometry("760x700")
+        w.minsize(700, 520)
+        w.protocol("WM_DELETE_WINDOW", self.close)
+
+        head = tk.Frame(w, bg=BG)
+        head.pack(fill="x")
+        inner = tk.Frame(head, bg=BG)
+        inner.pack(fill="x", padx=26, pady=(18, 10))
+        tk.Label(inner, text="行为统计", bg=BG, fg=INK,
+                 font=(FONT, 16, "bold"), anchor="w").pack(side="left")
+        self.summary = tk.Label(inner, text="", bg=BG, fg=MUTED,
+                                font=(FONT, 9), anchor="w")
+        self.summary.pack(side="left", padx=(14, 0), pady=(4, 0))
+
+        seg = tk.Frame(head, bg=BG)
+        seg.pack(fill="x", padx=26, pady=(0, 12))
+
+        self.view_btns = {}
+        for key, label in (("app", "按程序"), ("text", "按回答")):
+            b = tk.Button(seg, text=label, command=lambda k=key: self.set_view(k),
+                          font=(FONT, 9), relief="flat", bd=0, cursor="hand2",
+                          padx=14, pady=5)
+            b.pack(side="left", padx=(0, 6))
+            self.view_btns[key] = b
+
+        self.seg_btns = {}
+        for key, label, _, _ in reversed(self.MODES):
+            b = tk.Button(seg, text=label, command=lambda k=key: self.set_mode(k),
+                          font=(FONT, 9), relief="flat", bd=0, cursor="hand2",
+                          padx=14, pady=5)
+            b.pack(side="right", padx=(6, 0))
+            self.seg_btns[key] = b
+
+        tk.Frame(w, bg=LINE, height=1).pack(fill="x")
+
+        foot = tk.Frame(w, bg=SOFT)
+        foot.pack(side="bottom", fill="x", padx=26, pady=(8, 16))
+        self.foot_lbl = tk.Label(
+            foot, text="只统计屏幕亮着、而且你在电脑前的时间。锁屏和离开都不算。",
+            bg=SOFT, fg=FAINT, font=(FONT, 8), anchor="w")
+        self.foot_lbl.pack(side="left")
+        button(foot, "关闭", self.close).pack(side="right")
+
+        self.sf = ScrollFrame(w, bg=SOFT)
+        self.sf.pack(fill="both", expand=True, padx=26, pady=(12, 0))
+
+        self.reload()
+        w.after(120, lambda: force_foreground(w))
+
+    def set_mode(self, key):
+        self.mode = key
+        self.reload()
+
+    def set_view(self, key):
+        self.view = key
+        self.reload()
+
+    def reload(self):
+        try:
+            self.app.usage.save(force=True)
+        except Exception:
+            pass
+        for key, label, days, off in self.MODES:
+            active = key == self.mode
+            self.seg_btns[key].config(
+                bg=ACCENT if active else SOFT,
+                fg=BG if active else MUTED,
+                activebackground=ACCENT_DARK if active else LINE,
+                activeforeground=BG if active else INK)
+        for key in ("app", "text"):
+            active = key == self.view
+            self.view_btns[key].config(
+                bg=ACCENT if active else SOFT,
+                fg=BG if active else MUTED,
+                activebackground=ACCENT_DARK if active else LINE,
+                activeforeground=BG if active else INK)
+
+        days, off = 1, 0
+        for key, _, d, o in self.MODES:
+            if key == self.mode:
+                days, off = d, o
+        if self.view == "app":
+            self.foot_lbl.config(text="只统计屏幕亮着、而且你在电脑前的时间。锁屏和离开都不算。")
+            self._render_app(load_usage(days, off))
+        else:
+            self.foot_lbl.config(text="按你当时的回答归类，时长是那一轮真正在用的时间。")
+            self._render_text(log_in_range(days, off))
+        try:
+            self.win.update_idletasks()
+        except Exception:
+            pass
+
+    def _render_app(self, data):
+        for child in self.sf.inner.winfo_children():
+            child.destroy()
+
+        total = sum(int(r.get("sec", 0)) for r in data.values())
+        if total <= 0:
+            tk.Label(self.sf.inner, text="\n这段时间还没有记录。\n\n"
+                     "程序在后台每秒看一眼你正在用的程序，攒够一分钟就落一次盘。",
+                     bg=SOFT, fg=FAINT, font=(FONT, 10), justify="left").pack(
+                anchor="w", padx=4, pady=(30, 0))
+            self.summary.config(text="没有数据")
+            return
+
+        self.summary.config(text=f"合计 {fmt_span(total)} · {len(data)} 个程序")
+
+        items = sorted(data.items(), key=lambda kv: -int(kv[1].get("sec", 0)))
+        rows = items[:14]
+        rest = items[14:]
+        if rest:
+            sec = sum(int(r.get("sec", 0)) for _, r in rest)
+            titles = {}
+            for _, r in rest:
+                for k, v in (r.get("titles") or {}).items():
+                    titles[k] = titles.get(k, 0) + int(v)
+            rows = rows + [("其他 %d 个程序" % len(rest), {"sec": sec, "titles": titles})]
+
+        for app, rec in rows:
+            sec = int(rec.get("sec", 0))
+            pct = sec * 100.0 / total
+            row = tk.Frame(self.sf.inner, bg=SOFT)
+            row.pack(fill="x", pady=(0, 14))
+
+            line = tk.Frame(row, bg=SOFT)
+            line.pack(fill="x")
+            tk.Label(line, text=app, bg=SOFT, fg=INK, font=(FONT, 10),
+                     anchor="w").pack(side="left")
+            tk.Label(line, text=f"{fmt_span(sec)}　{pct:.0f}%", bg=SOFT, fg=MUTED,
+                     font=(FONT, 9), anchor="e").pack(side="right")
+
+            bar = tk.Canvas(row, bg="#EDF0F4", height=6, highlightthickness=0, bd=0)
+            bar.pack(fill="x", pady=(5, 0))
+
+            def draw(event, pct=pct, bar=bar):
+                bar.delete("all")
+                w = max(1, int(event.width))
+                bar.create_rectangle(0, 0, max(2, int(w * pct / 100.0)), 6,
+                                     fill=ACCENT if pct >= 10 else ACCENT_PALE,
+                                     outline="")
+
+            bar.bind("<Configure>", draw)
+
+            titles = rec.get("titles") or {}
+            if titles:
+                top = max(titles.items(), key=lambda kv: int(kv[1]))[0]
+                if top and top != app:
+                    tk.Label(row, text=self._clip(top, 70), bg=SOFT, fg=FAINT,
+                             font=(FONT, 8), anchor="w").pack(fill="x", pady=(3, 0))
+
+    def _render_text(self, recs):
+        for child in self.sf.inner.winfo_children():
+            child.destroy()
+
+        groups = {}
+        prev_ts = 0.0
+        total_chars = 0
+        for r in recs:
+            ts = float(r.get("ts") or 0)
+            span = int(r.get("span") or 0)
+            if span <= 0 and prev_ts > 0 and ts > prev_ts:
+                span = int(ts - prev_ts)
+            if ts:
+                prev_ts = ts
+            ans = str(r.get("answer") or "").strip()
+            if not ans:
+                continue
+            g = groups.setdefault(ans, {"n": 0, "sec": 0, "moyu": 0})
+            g["n"] += 1
+            g["sec"] += max(0, span)
+            total_chars += len(ans)
+            if r.get("kind") == "moyu":
+                g["moyu"] += 1
+
+        if not groups:
+            tk.Label(self.sf.inner, text="\n这段时间还没有回答。\n\n"
+                     "被问的时候写了什么，这里就按那句话归类。",
+                     bg=SOFT, fg=FAINT, font=(FONT, 10), justify="left").pack(
+                anchor="w", padx=4, pady=(30, 0))
+            self.summary.config(text="没有数据")
+            return
+
+        total_n = sum(g["n"] for g in groups.values())
+        total_sec = sum(g["sec"] for g in groups.values())
+        avg_len = int(total_chars / total_n) if total_n else 0
+        self.summary.config(
+            text="%d 次 · %d 种说法 · 平均 %d 字" % (total_n, len(groups), avg_len))
+
+        if total_sec <= 0:
+            tk.Label(self.sf.inner, text="这些记录还没带时长，只有次数。",
+                     bg=SOFT, fg=FAINT, font=(FONT, 8)).pack(anchor="w", pady=(0, 10))
+
+        items = sorted(groups.items(), key=lambda kv: (-kv[1]["sec"], -kv[1]["n"]))
+        rows = items[:15]
+        rest = items[15:]
+        if rest:
+            rows = rows + [("其他 %d 种说法" % len(rest), {
+                "n": sum(g["n"] for _, g in rest),
+                "sec": sum(g["sec"] for _, g in rest), "moyu": 0})]
+
+        basis = total_sec if total_sec > 0 else total_n
+        for ans, g in rows:
+            pct = (g["sec"] if total_sec > 0 else g["n"]) * 100.0 / (basis or 1)
+            row = tk.Frame(self.sf.inner, bg=SOFT)
+            row.pack(fill="x", pady=(0, 14))
+
+            line = tk.Frame(row, bg=SOFT)
+            line.pack(fill="x")
+            tk.Label(line, text=self._clip(ans, 26), bg=SOFT, fg=INK,
+                     font=(FONT, 10), anchor="w").pack(side="left")
+            right = "%d 次" % g["n"]
+            if g["sec"] > 0:
+                right = fmt_span(g["sec"]) + "　" + right
+            tk.Label(line, text=right, bg=SOFT, fg=MUTED, font=(FONT, 9),
+                     anchor="e").pack(side="right")
+
+            bar = tk.Canvas(row, bg="#EDF0F4", height=6, highlightthickness=0, bd=0)
+            bar.pack(fill="x", pady=(5, 0))
+
+            def draw(event, pct=pct, bar=bar):
+                bar.delete("all")
+                w = max(1, int(event.width))
+                bar.create_rectangle(0, 0, max(2, int(w * pct / 100.0)), 6,
+                                     fill=ACCENT if pct >= 10 else ACCENT_PALE,
+                                     outline="")
+
+            bar.bind("<Configure>", draw)
+
+            notes = []
+            if g["n"] >= 2:
+                notes.append("这句话你说了 %d 次" % g["n"])
+            if g["moyu"]:
+                notes.append("其中 %d 次承认在摸鱼" % g["moyu"])
+            if notes:
+                tk.Label(row, text="　·　".join(notes), bg=SOFT,
+                         fg=DUP1 if g["n"] >= 3 else FAINT,
+                         font=(FONT, 8), anchor="w").pack(fill="x", pady=(3, 0))
+
+    @staticmethod
+    def _clip(s, n):
+        s = str(s or "").strip()
+        return s if len(s) <= n else s[:n] + "…"
+
+    def close(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        self.app.usage_win = None
+
+
+# ---------------------------------------------------------------- 设置窗口
+
+class SettingsWindow:
+    def __init__(self, app):
+        self.app = app
+        w = tk.Toplevel(app.root)
+        self.win = w
+        w.title(TITLE + " · 设置")
+        w.configure(bg=BG)
+        w.geometry("560x680")
+        w.minsize(520, 520)
+        w.protocol("WM_DELETE_WINDOW", self.close)
+
+        head = tk.Frame(w, bg=BG)
+        head.pack(fill="x", padx=26, pady=(18, 0))
+        tk.Label(head, text="设置", bg=BG, fg=INK,
+                 font=(FONT, 15, "bold"), anchor="w").pack(anchor="w")
+        tk.Label(head, text="改完立刻生效。数值项直接改数字，开关点一下。",
+                 bg=BG, fg=MUTED, font=(FONT, 9), anchor="w").pack(anchor="w", pady=(3, 12))
+        tk.Frame(w, bg=LINE, height=1).pack(fill="x")
+
+        bar = tk.Frame(w, bg=BG)
+        bar.pack(side="bottom", fill="x", padx=26, pady=(10, 16))
+        button(bar, "保存", self.save, kind="primary").pack(side="left")
+        button(bar, "取消", self.close).pack(side="left", padx=(8, 0))
+        button(bar, "恢复默认", self.reset).pack(side="right")
+        tk.Frame(w, bg=LINE, height=1).pack(side="bottom", fill="x")
+
+        self.sf = ScrollFrame(w, bg=BG)
+        self.sf.pack(fill="both", expand=True)
+        self.vars = {}
+        self._build(self.sf.inner)
+        w.after(120, lambda: force_foreground(w))
+
+    # -------- 构建
+
+    def _section(self, parent, title, desc=""):
+        f = tk.Frame(parent, bg=BG)
+        f.pack(fill="x", padx=26, pady=(16, 2))
+        tk.Label(f, text=title, bg=BG, fg=ACCENT_DARK,
+                 font=(FONT, 10, "bold"), anchor="w").pack(fill="x")
+        if desc:
+            tk.Label(f, text=desc, bg=BG, fg=FAINT, font=(FONT, 8),
+                     anchor="w", justify="left").pack(fill="x", pady=(2, 0))
+        return f
+
+    def _row(self, parent, label, desc=""):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=26, pady=(9, 0))
+        left = tk.Frame(row, bg=BG)
+        left.pack(side="left", fill="x", expand=True)
+        tk.Label(left, text=label, bg=BG, fg=INK, font=(FONT, 10),
+                 anchor="w").pack(fill="x")
+        if desc:
+            tk.Label(left, text=desc, bg=BG, fg=FAINT, font=(FONT, 8),
+                     anchor="w", justify="left", wraplength=380).pack(fill="x", pady=(2, 0))
+        return row
+
+    def _bool(self, parent, key, label, desc=""):
+        row = self._row(parent, label, desc)
+        var = tk.IntVar(value=int(self.app.cfg.get(key, DEFAULTS[key])))
+        self.vars[key] = ("bool", var)
+        Switch(row, var, bg=BG).pack(side="right", padx=(12, 0), pady=(2, 0))
+
+    def _num(self, parent, key, label, desc="", width=8, suffix="", is_float=False):
+        row = self._row(parent, label, desc)
+        var = tk.StringVar(value=str(self.app.cfg.get(key, DEFAULTS[key])))
+        self.vars[key] = ("float" if is_float else "num", var)
+        holder = tk.Frame(row, bg=BG)
+        holder.pack(side="right", padx=(12, 0))
+        tk.Entry(holder, textvariable=var, font=(FONT, 10), relief="flat",
+                 bg=SOFT, fg=INK, width=width, justify="right",
+                 highlightbackground=LINE, highlightthickness=1).pack(side="left", ipady=4)
+        if suffix:
+            tk.Label(holder, text=suffix, bg=BG, fg=FAINT,
+                     font=(FONT, 9)).pack(side="left", padx=(5, 0))
+
+    def _time(self, parent, key, label, desc=""):
+        row = self._row(parent, label, desc)
+        var = tk.StringVar(value=str(self.app.cfg.get(key, DEFAULTS[key])))
+        self.vars[key] = ("time", var)
+        tk.Entry(row, textvariable=var, font=(FONT, 10), relief="flat",
+                 bg=SOFT, fg=INK, width=7, justify="center",
+                 highlightbackground=LINE, highlightthickness=1).pack(
+            side="right", padx=(12, 0), ipady=4)
+
+    def _text(self, parent, key, label, desc="", button_cmd=None, button_text="",
+              secret=False, width=20):
+        row = self._row(parent, label, desc)
+        var = tk.StringVar(value=str(self.app.cfg.get(key, DEFAULTS[key])))
+        self.vars[key] = ("text", var)
+        holder = tk.Frame(row, bg=BG)
+        holder.pack(side="right", padx=(12, 0))
+        if button_cmd:
+            tk.Button(holder, text=button_text, command=button_cmd, bg=BG, fg=ACCENT,
+                      activebackground=SOFT, font=(FONT, 8), relief="flat", bd=0,
+                      cursor="hand2", padx=6).pack(side="right")
+        tk.Entry(holder, textvariable=var, font=(FONT, 9), relief="flat",
+                 bg=SOFT, fg=INK, width=width, justify="right",
+                 show="\u2022" if secret else "",
+                 highlightbackground=LINE, highlightthickness=1).pack(
+            side="right", ipady=4, padx=(0, 4))
+
+    def _build(self, p):
+        cfg = self.app.cfg
+
+        self._section(p, "总开关", "关掉之后完全不计时、不提醒。想临时歇一会儿用悬浮条右键的「暂停」。")
+        self._bool(p, "enabled", "开启提醒", "总开关。等于「是否弹窗」——弹窗是这个工具唯一的入口。")
+
+        self._section(p, "节奏", "活跃时间每满一段，随机挑一个时刻问你。不显示倒计时。")
+        self._num(p, "min_minutes", "最短间隔", "两次提问之间，活跃时间至少隔多久。", suffix="分钟")
+        self._num(p, "max_minutes", "最长间隔", "再久也不会超过这个数。", suffix="分钟")
+        self._num(p, "first_minutes", "启动后首次", "打开程序后，最早多久可能被问。", suffix="分钟")
+
+        self._section(p, "判定什么算「在用」",
+                      "屏幕亮着就算在用——发呆、看视频、读长文都不算离开。")
+        self._bool(p, "idle_stop_enabled", "长时间无输入就停表",
+                   "关掉后只要没锁屏就一直计时，适合挂着看长视频。")
+        self._num(p, "away_minutes", "多久无输入算离开", "仅在上面开关打开时生效。全屏播放时不会停表。",
+                  suffix="分钟")
+
+        self._section(p, "锁屏模式",
+                      "打开后，连「没碰电脑也没碰手机、人还在浪费时间」一起管：锁屏后仍计时，到点响铃，回来补弹。")
+        self._bool(p, "watch_off_screen", "锁屏后仍然计时和提醒",
+                   "关掉时只管屏幕亮着的部分。")
+        self._num(p, "off_screen_grace_minutes", "锁屏宽限",
+                  "超过这个时间就算人真走了，停表。避免放一整夜累积假时长。", suffix="分钟")
+        self._bool(p, "alert_when_off_screen", "锁屏时到点响铃",
+                   "屏幕黑着看不到弹窗，靠声音叫你回来。")
+
+        self._section(p, "提交门槛", "防止肌肉记忆糊过去。")
+        self._num(p, "min_chars", "至少写几个字", "少于这个字数提交不了。", suffix="字")
+        self._bool(p, "allow_repeat", "允许和上一条完全相同",
+                   "不检查重复。但要配合下面的禁止粘贴，否则等于允许复制。")
+        self._bool(p, "block_paste", "禁止粘贴",
+                   "防止把上次的答案复制过来。手打才作数。")
+        self._num(p, "cooldown_seconds", "冷静期", "弹出后多少秒才允许提交，可以填 0.5 这种小数。0 = 不等待。",
+                  suffix="秒", is_float=True)
+
+        self._section(p, "提醒方式", "电脑端没有震动，只有声音。")
+        self._bool(p, "sound", "响铃", "")
+        self._text(p, "sound_uri", "铃声", "填 beep 用系统提示音，或选一个 wav 文件。",
+                   button_cmd=self._pick_wav, button_text="选文件")
+        self._bool(p, "dnd_enabled", "免打扰时段", "这段时间内完全暂停，不弹不问。")
+        self._time(p, "dnd_start", "开始", "24 小时制，例如 22:00")
+        self._time(p, "dnd_end", "结束", "跨零点自动处理，例如 08:00")
+
+        self._section(p, "附加", "")
+        self._bool(p, "long_session_alert", "连续使用太久补问一次",
+                   "在一轮连续使用里，超过阈值额外插一次提问。")
+        self._num(p, "long_session_minutes", "阈值", "连续用多久补问。", suffix="分钟")
+        self._num(p, "repeat_warn", "重复几次标黄", "同一句话出现第几次开始变黄。", suffix="次")
+        self._num(p, "repeat_alert", "重复几次标红", "同一句话出现第几次开始变红。", suffix="次")
+
+        self._section(p, "统计与截图",
+                      "每秒看一眼你正在用的程序，攒成每天的时间分布。截图只在弹窗前拍一张，存在本地。")
+        self._bool(p, "track_app", "记录每个程序用了多久",
+                   "关掉就不统计时间分布，其余功能不受影响。")
+        self._bool(p, "track_titles", "同时记录窗口标题",
+                   "能看出「在 Chrome 里干什么」。标题可能带文档名或网址，介意就关掉。")
+        self._bool(p, "shot_enabled", "弹窗前自动截图",
+                   "只在弹窗前拍一张，压缩后存本地，用来事后核对当时在干什么。")
+        self._num(p, "shot_width", "截图宽度", "越小越省空间。", suffix="像素")
+        self._num(p, "shot_quality", "JPEG 质量", "20-95。60 大约是原图的十分之一。", width=6)
+        self._num(p, "shot_keep_days", "截图保留天数", "超过就自动删除。0 = 永久保留。", suffix="天")
+        shotrow = tk.Frame(p, bg=BG)
+        shotrow.pack(fill="x", padx=26, pady=(10, 0))
+        button(shotrow, "打开截图文件夹", self._open_shots).pack(side="left")
+        self.shot_lbl = tk.Label(shotrow, text="", bg=BG, fg=FAINT,
+                                 font=(FONT, 8), anchor="w")
+        self.shot_lbl.pack(side="left", padx=(10, 0))
+
+        self._section(p, "同步（WebDAV）",
+                      "任何支持 WebDAV 的服务都能用，不限于某一家。只同步记录，不同步设置和计时状态。")
+        self._bool(p, "sync_enabled", "开启同步", "")
+        self._text(p, "sync_url", "服务器地址", "例如 https://dav.example.com/dav/AskMe/", width=27)
+        self._text(p, "sync_user", "账号", "一般是注册邮箱。")
+        self._text(p, "sync_pass", "密码", "要填「应用密码」，不是登录密码。", secret=True)
+        self._text(p, "sync_device_id", "设备名", "两台设备必须不一样，比如 pc / android。")
+        syncrow = tk.Frame(p, bg=BG)
+        syncrow.pack(fill="x", padx=26, pady=(10, 0))
+        button(syncrow, "测试连接", self._test_webdav).pack(side="left")
+        self.test_lbl = tk.Label(syncrow, text="", bg=BG, fg=MUTED, font=(FONT, 8),
+                                 anchor="w", justify="left", wraplength=330)
+        self.test_lbl.pack(side="left", padx=(10, 0))
+
+        tk.Frame(p, bg=BG, height=14).pack()
+
+    def _open_shots(self):
+        try:
+            os.makedirs(SHOTS_DIR, exist_ok=True)
+            os.startfile(SHOTS_DIR)
+        except Exception:
+            messagebox_info(self.win, "打不开", SHOTS_DIR)
+
+    def _test_webdav(self):
+        cfg = dict(self.app.cfg)
+        for k in ("sync_url", "sync_user", "sync_pass", "sync_device_id"):
+            if k in self.vars:
+                cfg[k] = str(self.vars[k][1].get()).strip()
+        self.test_lbl.config(text="正在连接…", fg=MUTED)
+
+        def work():
+            ok, msg = webdav_test(cfg)
+            try:
+                self.win.after(0, lambda: self.test_lbl.config(
+                    text=msg, fg=OK if ok else DANGER))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pick_wav(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            parent=self.win, title="选一个 wav 铃声",
+            filetypes=[("Wave 音频", "*.wav"), ("所有文件", "*.*")])
+        if path:
+            kind, var = self.vars["sound_uri"]
+            var.set(path)
+
+    # -------- 保存
+
+    def _collect(self):
+        out = {}
+        for key, (kind, var) in self.vars.items():
+            if kind == "bool":
+                out[key] = int(var.get())
+            elif kind == "num":
+                try:
+                    out[key] = int(str(var.get()).strip())
+                except Exception:
+                    raise ValueError(key)
+            elif kind == "float":
+                try:
+                    out[key] = round(float(str(var.get()).strip().replace("，", ".")), 2)
+                except Exception:
+                    raise ValueError(key)
+            elif kind == "time":
+                s = str(var.get()).strip()
+                h, m = parse_hhmm(s, (-1, -1))
+                if h < 0:
+                    raise ValueError(key)
+                out[key] = f"{h:02d}:{m:02d}"
+            else:
+                out[key] = str(var.get()).strip()
+        return out
+
+    LABELS = {
+        "min_minutes": "最短间隔", "max_minutes": "最长间隔", "first_minutes": "启动后首次",
+        "away_minutes": "多久无输入算离开", "off_screen_grace_minutes": "锁屏宽限",
+        "min_chars": "至少写几个字", "cooldown_seconds": "冷静期",
+        "long_session_minutes": "连续使用阈值", "repeat_warn": "重复几次标黄",
+        "repeat_alert": "重复几次标红", "dnd_start": "免打扰开始", "dnd_end": "免打扰结束",
+        "shot_width": "截图宽度", "shot_quality": "JPEG 质量", "shot_keep_days": "截图保留天数",
+    }
+
+    def save(self):
+        try:
+            new = self._collect()
+        except ValueError as e:
+            key = str(e)
+            messagebox_info(self.win, "不对", f"「{self.LABELS.get(key, key)}」得填数字。")
+            return
+
+        errs = []
+        if new["min_minutes"] < 1 or new["max_minutes"] < 1:
+            errs.append("间隔得大于 0。")
+        if new["max_minutes"] <= new["min_minutes"]:
+            errs.append("最长间隔得比最短间隔大。")
+        if new["min_chars"] < 1:
+            errs.append("最少字数至少是 1。")
+        if new["away_minutes"] < 1:
+            errs.append("无输入判定至少 1 分钟。")
+        if new["off_screen_grace_minutes"] < 0:
+            errs.append("锁屏宽限不能是负数。")
+        if new["cooldown_seconds"] < 0 or new["cooldown_seconds"] > 60:
+            errs.append("冷静期要在 0 到 60 秒之间。")
+        if new["repeat_alert"] <= new["repeat_warn"]:
+            errs.append("标红的次数得比标黄大。")
+        if new["long_session_minutes"] < 1:
+            errs.append("连续使用阈值至少 1 分钟。")
+        if not (160 <= new["shot_width"] <= 3840):
+            errs.append("截图宽度要在 160 到 3840 之间。")
+        if not (20 <= new["shot_quality"] <= 95):
+            errs.append("JPEG 质量要在 20 到 95 之间。")
+        if new["shot_keep_days"] < 0:
+            errs.append("截图保留天数不能是负数。")
+        if new["sync_enabled"] and not new["sync_url"].strip():
+            errs.append("开了同步就得填服务器地址。")
+        if new["sync_enabled"] and not new["sync_device_id"].strip():
+            errs.append("开了同步就得给这台设备起个名字。")
+        if errs:
+            messagebox_info(self.win, "不对", "\n".join(errs))
+            return
+
+        self.app.apply_settings(new)
+        self.close()
+
+    def reset(self):
+        from tkinter import messagebox
+        if not messagebox.askyesno("恢复默认", "把所有设置恢复成默认值？记录不受影响。",
+                                   parent=self.win):
+            return
+        for key, (kind, var) in self.vars.items():
+            if kind == "bool":
+                var.set(int(DEFAULTS[key]))
+            else:
+                var.set(str(DEFAULTS[key]))
+
+    def close(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        self.app.settings = None
+
+
+def messagebox_info(parent, title, text):
+    from tkinter import messagebox
+    messagebox.showinfo(title, text, parent=parent)
+
+
+# ---------------------------------------------------------------- 入口
+
+def selftest():
+    ensure_dirs()
+    print(f"数据目录        {DATA_DIR}")
+    print(f"配置            {load_cfg()}")
+    print(f"锁屏状态        {'已锁' if is_locked() else '未锁'}")
+    print(f"空闲秒数        {idle_seconds():.1f}")
+    print(f"前台全屏        {is_fullscreen()}")
+    print(f"免打扰(现在)    {in_dnd(load_cfg())}")
+    app_name, app_title = foreground_app()
+    print(f"前台程序        {app_name}  |  {app_title[:40]}")
+
+    probe = os.path.join(SHOTS_DIR, "_selftest.jpg")
+    ok = capture_jpeg(probe, 480, 55)
+    size = os.path.getsize(probe) if ok and os.path.exists(probe) else 0
+    print(f"截图 JPEG       {'OK %d 字节' % size if ok else 'FAIL'}")
+    if os.path.exists(probe):
+        os.remove(probe)
+
+    u = Usage()
+    u.add("__selftest__", "自检", 5)
+    u.save(force=True)
+    got_u = load_usage(1).get("__selftest__", {}).get("sec")
+    print(f"时间归属写读    {'OK' if got_u else 'FAIL'}")
+    if got_u:
+        u.apps.pop("__selftest__", None)
+        u.dirty = True
+        u.save(force=True)
+
+    rec = {"id": "selftest", "ts": time.time(), "time": "12:00",
+           "day": "1970-01-01", "answer": "自检写入", "kind": "normal",
+           "active": 0, "n": 0, "delay": 0, "shot": "", "src": "pc"}
+    append_log(rec)
+    got = [r for r in read_log() if r.get("id") == "selftest"]
+    print(f"写读日志        {'OK' if got else 'FAIL'}")
+    if got:
+        # 清理自检记录
+        rows = [r for r in read_log() if r.get("id") != "selftest"]
+        tmp = LOG_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        os.replace(tmp, LOG_PATH)
+        _LOG_CACHE["mtime"] = 0
+        print("清理自检记录    OK")
+    print("自检完成")
+
+
+def main():
+    if "--selftest" in sys.argv:
+        selftest()
+        return
+
+    def hook(exc_type, exc, tb):
+        log_error("".join(traceback.format_exception(exc_type, exc, tb)))
+
+    sys.excepthook = hook
+
+    app = AskMe()
+    if "--demo" in sys.argv:
+        app.root.after(600, lambda: app.show_popup("normal"))
+    app.root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
