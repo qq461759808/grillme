@@ -194,6 +194,16 @@ public final class Ui {
                     b = insets.getSystemWindowInsetBottom();
                 }
                 got[0] = true;
+                // 竖屏手机上系统栏只可能在上下，左右内边距必须是 0。
+                // 但 recreate()（切语言会走这条路）时系统派发的 insets 里会带上一个
+                // 四十多 dp 的左边值，照抄进去整页就往右缩一截，「返回」会从最左边
+                // 跑到屏幕中间。横屏才真的需要侧边距（导航栏在侧边）。
+                boolean landscape = view.getResources().getConfiguration().orientation
+                        == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+                if (!landscape) {
+                    l = 0;
+                    r = 0;
+                }
                 view.setPadding(l0 + l, t0 + t, r0 + r, b0 + b);
                 return insets;
             }
@@ -209,8 +219,11 @@ public final class Ui {
                     return;
                 }
                 Context c = v.getContext();
-                v.setPadding(l0 + statusBarHeight(c), t0 + statusBarHeight(c),
-                        r0, b0 + navBarHeight(c));
+                // 注意左边距只能给 l0。这里以前写的是 l0 + statusBarHeight(c)，
+                // 等于把状态栏高度当成左边距，竖屏下整页往右缩一截。切语言会走
+                // recreate()，那一次 insets 经常赶不上这 400ms，于是每次都命中兜底，
+                // 「返回」就从最左边跳到屏幕中间。
+                v.setPadding(l0, t0 + statusBarHeight(c), r0, b0 + navBarHeight(c));
             }
         }, 400);
     }
@@ -243,14 +256,36 @@ public final class Ui {
 
     /** 一行「标题 + 说明」，右侧留给你塞控件。 */
     public static LinearLayout line(Context c, String title, String sub, View right) {
+        return line(c, title, sub, right, null);
+    }
+
+    /** 同上，但标题后面挂一个问号，点开解释这一项到底在干什么。 */
+    public static LinearLayout line(Context c, String title, String sub, View right, String help) {
         // 右侧控件必须和标题同一行。之前把标题+副标题放在左侧一列里、右侧控件
         // 垂直居中，副标题一长，状态文字就会跑到副标题那一行上去，读起来像一句话被截断。
         LinearLayout box = col(c);
         box.setPadding(0, dp(c, 10), 0, dp(c, 10));
 
         LinearLayout top = row(c);
-        top.addView(tv(c, title, 15, TEXT, false),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final boolean hasHelp = help != null && help.length() > 0;
+        TextView t = tv(c, hasHelp ? titleWithHelp(title) : title, 15, TEXT, false);
+        if (hasHelp) {
+            // 整条标题可点。本来想只让问号那几个像素可点（ClickableSpan），但
+            // LinkMovementMethod 在这台机器上根本没命中 span，点了没反应。
+            // 改成整条标题可点反而更一致：点标题看解释，点右侧控件改数值。
+            final String h = help;
+            t.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    new android.app.AlertDialog.Builder(c, android.R.style.Theme_Material_Dialog_Alert)
+                            .setTitle(title)
+                            .setMessage(h)
+                            .setPositiveButton(Lang.t("ok"), null)
+                            .show();
+                }
+            });
+        }
+        top.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         if (right != null) {
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -265,6 +300,22 @@ public final class Ui {
             box.addView(s);
         }
         return box;
+    }
+
+    /** 标题末尾缀一个小问号，作为「这里能点」的提示。 */
+    private static CharSequence titleWithHelp(String title) {
+        // 用窄空格 + 0.85 倍的问号，只占二十来像素。用普通空格 + 原尺寸的话，
+        // 「两次质问的最短间隔」这种长标题会正好被挤到第二行，中文断成「隔 ?」很难看。
+        // 隔两个窄空格，是为了让问号别贴着文字——贴着读起来像「间隔?」这种疑问句。
+        String s = title + "\u2009\u2009?";
+        android.text.SpannableString sp = new android.text.SpannableString(s);
+        int a = s.length() - 1;
+        int b = s.length();
+        int flags = android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE;
+        sp.setSpan(new android.text.style.RelativeSizeSpan(0.85f), a, b, flags);
+        sp.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), a, b, flags);
+        sp.setSpan(new android.text.style.ForegroundColorSpan(MUTED), a, b, flags);
+        return sp;
     }
 
     /** 细长的水平进度条，用来画占比。 */

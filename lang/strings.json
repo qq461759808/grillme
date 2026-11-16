@@ -1024,10 +1024,196 @@
       "ru": "Ошибка экспорта: {0}"
     },
     "value_range": {
-      "zh": "可填 {0} – {1}",
-      "en": "Allowed {0} – {1}",
-      "ja": "入力できる範囲 {0} – {1}",
-      "ru": "Допустимо {0} – {1}"
+      "zh": "推荐 {0} – {1}",
+      "en": "Suggested {0} – {1}",
+      "ja": "推奨 {0} – {1}",
+      "ru": "Рекомендуется {0} – {1}"
+    },
+    "value_out_of_range": {
+      "zh": "已保存 {0}，超出推荐 {1} – {2}",
+      "en": "Saved {0} — outside the suggested {1} – {2}",
+      "ja": "{0} で保存（推奨 {1} – {2} の外）",
+      "ru": "Сохранено {0} — вне {1} – {2}"
+    },
+    "help_min_minutes": {
+      "zh": "两次质问之间最短隔多久。和「最长间隔」一起决定随机区间——每次都在这两个数之间随机抽，抽到多少就等多少。填小了会被频繁打断，填大了容易整段时间没人管你。",
+      "en": "The shortest possible gap between two popups. Together with the maximum it forms a random range, and each wait is drawn from it. Too small and you get interrupted constantly; too large and long stretches go unwatched.",
+      "ja": "2回の質問の最短間隔。「最長間隔」と合わせてランダム範囲を作り、毎回その中から抽選します。小さすぎると頻繁に中断され、大きすぎると長い間ノーチェックになります。",
+      "ru": "Минимальный промежуток между вопросами. Вместе с максимумом задаёт диапазон, из которого каждый раз случайно выбирается пауза. Слишком мало — будут дёргать постоянно; слишком много — долгие отрезки останутся без контроля."
+    },
+    "help_max_minutes": {
+      "zh": "最长隔多久一定来一次。这是上限不是平均值——真正的间隔在最短和最长之间随机。",
+      "en": "The longest you can go without a popup. This is a ceiling, not an average — the real gap is random between the two values.",
+      "ja": "どれだけ間が空いても必ず来る上限。平均値ではなく上限で、実際の間隔は最短〜最長のランダムです。",
+      "ru": "Максимум, дольше которого вас не оставят. Это потолок, а не среднее — реальный интервал случаен между двумя значениями."
+    },
+    "help_first_minutes": {
+      "zh": "开启之后第一次质问等多久。设短一点能马上感受到它怎么工作，设长了容易忘记自己开过。",
+      "en": "How long after switching it on the first popup arrives. Short lets you feel how it works; long and you forget you turned it on.",
+      "ja": "オンにしてから最初の質問までの待ち時間。短いと動作をすぐ体感でき、長いと入れたこと自体を忘れます。",
+      "ru": "Сколько ждать первого вопроса после включения. Коротко — сразу почувствуете, как это работает; долго — забудете, что включили."
+    },
+    "help_watch_off_screen": {
+      "zh": "打开后，锁屏和屏幕关闭的时间也计入间隔。适合「手机扔一边人就走了」的情况；但一直盯着会更耗电。",
+      "en": "When on, time with the screen off or locked also counts toward the interval. Good for \"phone down, mind gone\"; costs more battery.",
+      "ja": "オンにすると画面オフやロック中の時間も間隔に含めます。「スマホを置いて離席する」タイプ向け。ただし常時監視のため電池を食います。",
+      "ru": "Если включено, время с выключенным или заблокированным экраном тоже идёт в счёт. Для случая «телефон отложил — и уплыл». Расход батареи выше."
+    },
+    "help_off_screen_grace": {
+      "zh": "屏幕关闭多久之后才算「你真的走了」。太短会因为你只是低头看一眼别的而误报，太长则会漏掉短时漂走。",
+      "en": "How long the screen must stay off before it counts as \"you left\". Too short misfires when you just glance away; too long misses short drifts.",
+      "ja": "画面が消えてから「離席した」とみなすまでの猶予。短すぎるとちょっと目を離しただけで誤判定し、長すぎると短い離席を取り逃します。",
+      "ru": "Сколько экран должен быть выключен, чтобы считать, что вы ушли. Слишком мало — ложные срабатывания; слишком много — короткие отлучки пропустятся."
+    },
+    "help_alert_when_off_screen": {
+      "zh": "屏幕关着也照样弹质问。关掉的话，你锁屏走人它就不管——那段时间是完全自由的。",
+      "en": "Pop the question even while the screen is off. Turn it off and locking the phone buys you total freedom.",
+      "ja": "画面オフでも質問を出します。オフにするとロックした時点で完全に自由になります。",
+      "ru": "Показывать вопрос даже при выключенном экране. Выключите — и блокировка телефона даёт полную свободу."
+    },
+    "help_min_chars": {
+      "zh": "答案至少打几个字才放行。设成 1 就是敲一个字就能过，设成 20 会逼你说清楚。它只管长度，不管内容。",
+      "en": "Minimum characters before you're let through. 1 means a single keystroke passes; 20 forces you to actually explain. It checks length, not meaning.",
+      "ja": "解除までに必要な最低文字数。1なら1文字で通れ、20なら説明を強いられます。長さだけを見て、中身は見ません。",
+      "ru": "Сколько символов нужно набрать для пропуска. 1 — хватит одной буквы; 20 — придётся объяснить. Проверяется длина, не смысл."
+    },
+    "help_allow_repeat": {
+      "zh": "允许你重复用以前说过的理由。关掉后，同一句话第二次就不算数——专治「我在工作」这种万能答案。",
+      "en": "Lets you reuse a reason you've given before. Off means the same sentence won't work twice — aimed at answers like \"I'm working\".",
+      "ja": "以前に使った理由の使い回しを許します。オフにすると同じ文は2回目から通じません。「仕事中」のような万能回答対策。",
+      "ru": "Разрешает повторять прежние причины. Если выключено, одна и та же фраза не сработает второй раз — против ответов вроде «я работаю»."
+    },
+    "help_block_paste": {
+      "zh": "禁止粘贴。不然你可以从别处复制一段话贴进来，等于没说话。",
+      "en": "Blocks paste. Otherwise you can copy a paragraph from elsewhere and it counts as an answer.",
+      "ja": "貼り付けを禁止します。そうしないと他所から文章をコピーして貼るだけで通ってしまいます。",
+      "ru": "Запрещает вставку. Иначе можно скопировать абзац откуда-то, и это сойдёт за ответ."
+    },
+    "help_cooldown": {
+      "zh": "放行之后多少秒内不再打断。给「刚回答完、手头这件事还得收个尾」留个缓冲。填 0 就是立刻重新计时。",
+      "en": "Seconds of silence after you're let through, so you can finish what you just justified. 0 restarts the clock immediately.",
+      "ja": "解除後この秒数は再質問しません。通した直後の作業を片付けるための猶予。0 なら即座に再計時。",
+      "ru": "Сколько секунд не беспокоить после пропуска — чтобы доделать то, что только что обосновали. 0 — сразу новый отсчёт."
+    },
+    "help_repeat_warn": {
+      "zh": "同一句话重复几次之后开始提醒你。填 0 表示不提醒。",
+      "en": "How many times the same sentence can repeat before it warns you. 0 turns the warning off.",
+      "ja": "同じ文が何回続いたら注意するか。0 で警告なし。",
+      "ru": "Сколько раз одна и та же фраза может повториться до предупреждения. 0 — без предупреждений."
+    },
+    "help_sound": {
+      "zh": "弹窗时响一声。戴着耳机、开会的时候建议关掉。",
+      "en": "A short sound when the popup appears. Worth turning off with headphones on or in meetings.",
+      "ja": "表示時に短く音を鳴らします。イヤホン中や会議中はオフ推奨。",
+      "ru": "Короткий звук при появлении вопроса. Лучше выключить в наушниках и на встречах."
+    },
+    "help_vibrate": {
+      "zh": "弹窗时震一下。手机静音时这是唯一能叫醒你的方式。",
+      "en": "A buzz when the popup appears. With the phone on silent this is the only thing that reaches you.",
+      "ja": "表示時に振動します。マナーモード時はこれだけが気づかせてくれます。",
+      "ru": "Вибрация при появлении вопроса. На беззвучном это единственное, что вас дозовётся."
+    },
+    "help_vibrate_pattern": {
+      "zh": "震动的节奏。选好之后会立刻试震一次，不满意可以再换。",
+      "en": "The vibration rhythm. Picking one buzzes it once so you can judge.",
+      "ja": "振動のパターン。選ぶと一度試しに震えます。",
+      "ru": "Рисунок вибрации. При выборе сразу проигрывается один раз."
+    },
+    "help_dnd_enabled": {
+      "zh": "在设定时段内完全不打扰。适合睡觉和固定不开工的时段。",
+      "en": "No interruptions during the set window. Meant for sleep and fixed off-hours.",
+      "ja": "指定した時間帯は一切中断しません。睡眠や決まった非稼働時間向け。",
+      "ru": "Никаких вопросов в заданном окне. Для сна и фиксированных нерабочих часов."
+    },
+    "help_dnd_start": {
+      "zh": "免打扰开始时间。跨零点也能用，比如 22:00 到次日 08:00。",
+      "en": "When quiet hours begin. Crosses midnight fine, e.g. 22:00 to 08:00.",
+      "ja": "邪魔しない時間の開始。日をまたげます（例 22:00〜08:00）。",
+      "ru": "Начало тихих часов. Переход через полночь работает: 22:00–08:00."
+    },
+    "help_dnd_end": {
+      "zh": "免打扰结束时间。到这个点就恢复质问，当天第一次往往来得很快。",
+      "en": "When quiet hours end. Popups resume here, and the first one usually lands soon after.",
+      "ja": "邪魔しない時間の終了。ここで再開し、その日最初の質問はたいてい直後に来ます。",
+      "ru": "Конец тихих часов. Здесь вопросы возобновляются, и первый обычно приходит вскоре."
+    },
+    "help_long_alert": {
+      "zh": "连续使用超过设定时长后额外提醒一次。和随机质问是两套机制：这个盯的是「这一次坐了多久」。",
+      "en": "One extra nudge after continuous use exceeds the limit. Separate from the random checks — this one watches how long the current stretch is.",
+      "ja": "連続使用が設定時間を超えたら追加で一度知らせます。ランダム質問とは別系統で、「今回どれだけ座り続けたか」を見ます。",
+      "ru": "Дополнительное напоминание, когда непрерывное использование превысило лимит. Отдельно от случайных вопросов — следит за длиной текущего подхода."
+    },
+    "help_long_minutes": {
+      "zh": "上面那个提醒的触发门槛。它统计的是连续使用，中途有足够长的空档会重新计数。",
+      "en": "The threshold for that nudge. It counts continuous use; a long enough break resets it.",
+      "ja": "その通知のしきい値。連続使用を数え、十分な空きがあればリセットされます。",
+      "ru": "Порог для этого напоминания. Считается непрерывное использование; достаточный перерыв сбрасывает счёт."
+    },
+    "help_shot_enabled": {
+      "zh": "弹窗时顺手截一张屏存下来，方便事后回看「当时到底在干嘛」。只在你回答的那次抓一帧，不是录屏。",
+      "en": "Saves a screenshot at popup time so you can see later what you were actually doing. One frame per answer, not a recording.",
+      "ja": "表示時に1枚だけ画面を保存し、後から「その時何をしていたか」を確認できます。録画ではなく1コマだけ。",
+      "ru": "Сохраняет скриншот в момент вопроса, чтобы потом увидеть, чем вы занимались. Один кадр, не запись."
+    },
+    "help_shot_width": {
+      "zh": "保存的截图宽度。越小越省空间，也越看不清字；比屏幕还大的值没有意义。",
+      "en": "Width of the saved screenshot. Smaller saves space but blurs text; larger than your screen gains nothing.",
+      "ja": "保存画像の幅。小さいほど容量を食いませんが文字が潰れます。画面より大きくしても意味はありません。",
+      "ru": "Ширина сохраняемого снимка. Меньше — экономит место, но текст мутнеет; больше экрана смысла нет."
+    },
+    "help_shot_quality": {
+      "zh": "JPEG 压缩质量，1 到 100。数值越大越清楚也越占空间，一般 60 左右够用。",
+      "en": "JPEG quality, 1 to 100. Higher is sharper and bigger; around 60 is plenty.",
+      "ja": "JPEG の圧縮品質（1〜100）。大きいほど綺麗で容量も増えます。60 前後で十分。",
+      "ru": "Качество JPEG, 1–100. Выше — чётче и тяжелее; около 60 достаточно."
+    },
+    "help_shot_keep": {
+      "zh": "截图保留多少天，到期的会被清掉。填 0 表示不保留截图，但记录还在。",
+      "en": "How many days screenshots are kept before cleanup. 0 keeps none — the records themselves stay.",
+      "ja": "画像の保存日数。期限が来たら削除されます。0 で画像は残しません（記録は残ります）。",
+      "ru": "Сколько дней хранить снимки. 0 — не хранить вовсе, записи при этом остаются."
+    },
+    "help_shot_auth": {
+      "zh": "截屏需要系统的投屏授权，安卓不允许应用自己偷偷抓屏幕。授权在重启手机后会失效，需要重新点一次。",
+      "en": "Capture needs the system's screen-sharing grant; Android won't let an app grab the screen silently. The grant dies on reboot and must be redone.",
+      "ja": "画面取得にはシステムの画面共有許可が必要です。Android は無断取得を許しません。再起動で失効するので再許可してください。",
+      "ru": "Для снимков нужно системное разрешение на захват экрана — Android не даёт приложению делать это скрытно. После перезагрузки разрешение слетает."
+    },
+    "help_language": {
+      "zh": "界面语言。选「跟随系统」时跟着手机的语言走，四种之外的语言会退到英文。",
+      "en": "Interface language. \"Follow system\" tracks the phone's language; anything outside the four falls back to English.",
+      "ja": "表示言語。「システムに従う」は端末の言語に合わせ、4言語以外は英語になります。",
+      "ru": "Язык интерфейса. «Как в системе» следует за телефоном; вне четырёх языков — английский."
+    },
+    "help_sync_enabled": {
+      "zh": "把记录同步到 WebDAV 网盘，多台设备之间合并。不上传任何账号信息，只传记录本身。",
+      "en": "Syncs records to a WebDAV drive and merges them across devices. No account data is uploaded, only the records.",
+      "ja": "記録を WebDAV に同期し、複数端末で統合します。アカウント情報は送らず、記録だけを送ります。",
+      "ru": "Синхронизирует записи в WebDAV и объединяет их между устройствами. Данные аккаунта не передаются, только записи."
+    },
+    "help_sync_url": {
+      "zh": "网盘的 WebDAV 地址，末尾要带目录。坚果云这类服务在设置里能找到专用的应用密码。",
+      "en": "The drive's WebDAV URL, ending with a folder. Services like Jianguoyun issue a separate app password.",
+      "ja": "WebDAV の URL。末尾はフォルダまで。Jianguoyun などは専用のアプリパスワードを発行できます。",
+      "ru": "Адрес WebDAV, с папкой на конце. У таких сервисов, как Jianguoyun, есть отдельный пароль приложения."
+    },
+    "help_sync_user": {
+      "zh": "WebDAV 的登录名，通常是邮箱。",
+      "en": "WebDAV login, usually an email address.",
+      "ja": "WebDAV のユーザー名。多くの場合メールアドレス。",
+      "ru": "Логин WebDAV, обычно почта."
+    },
+    "help_sync_pass": {
+      "zh": "WebDAV 的密码。坚果云这类服务要用「应用密码」，不是登录密码。",
+      "en": "The WebDAV password. Services like Jianguoyun need an app password, not your login password.",
+      "ja": "WebDAV のパスワード。Jianguoyun などはログインパスワードではなく「アプリパスワード」を使います。",
+      "ru": "Пароль WebDAV. У таких сервисов нужен пароль приложения, а не пароль от входа."
+    },
+    "help_sync_device": {
+      "zh": "这台设备的名字，合并时用来区分来源。两台设备填不同名字，否则记录会互相覆盖。",
+      "en": "This device's name, used to tell sources apart when merging. Use different names on different devices or records overwrite each other.",
+      "ja": "端末名。統合時に出所を区別するために使います。端末ごとに別名にしないと記録が上書きされます。",
+      "ru": "Имя этого устройства — по нему различаются источники при слиянии. На разных устройствах имена должны быть разными."
     }
   }
 }

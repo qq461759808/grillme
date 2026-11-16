@@ -214,7 +214,7 @@ public final class Cfg {
     }
 
     public int longMinutes() {
-        return Math.max(10, i(LONG_MINUTES, 180));
+        return Math.max(1, i(LONG_MINUTES, 180));
     }
 
     public boolean trackApp() {
@@ -229,12 +229,15 @@ public final class Cfg {
         return b(SHOT_ENABLED, 1);
     }
 
+    // 下面几个的上下限只是"存进来别把程序搞崩"，不再按推荐值夹断。
+    // 推荐区间在设置页里单独提示，用户想填大就让他填——夹断了他还以为自己填错了。
     public int shotWidth() {
-        return Math.max(360, Math.min(1600, i(SHOT_WIDTH, 800)));
+        return Math.max(1, Math.min(10000, i(SHOT_WIDTH, 800)));
     }
 
     public int shotQuality() {
-        return Math.max(20, Math.min(95, i(SHOT_QUALITY, 60)));
+        // JPEG 规范就是 1–100，超出这个范围不是"不合适"，是编码器直接失败
+        return Math.max(1, Math.min(100, i(SHOT_QUALITY, 60)));
     }
 
     public int shotKeepDays() {
