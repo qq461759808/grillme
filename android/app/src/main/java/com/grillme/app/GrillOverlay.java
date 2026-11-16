@@ -51,6 +51,7 @@ public class GrillOverlay {
     private TextView passBtn;
     private TextView warn;
     private boolean showing;
+    private long shownAt;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private long openedAt;
@@ -64,13 +65,41 @@ public class GrillOverlay {
         this.listener = listener;
     }
 
+    /**
+     * 窗口是不是真的还挂在 WindowManager 上。
+     *
+     * 光看 showing 这个旗子是不够的：锁屏、切换用户、悬浮窗权限被系统撤掉的时候，
+     * 系统会把 TYPE_APPLICATION_OVERLAY 的窗口直接摘走，但我们的旗子还留在 true。
+     * 一旦旗子说谎，服务里的 tickOnce 就会永远走「弹窗已经挂着，先不管」那条分支，
+     * 时间一路涨到几百秒也不弹新窗——用户看到的就是「锁屏解锁后不弹，切回 App 才弹」。
+     *
+     * 判断分两层，因为这两个信号的时机不一样：
+     * - getParent()：addView 返回时就已经挂上了（ViewRootImpl.setView 里 assignParent），
+     *   窗口被摘掉时由 dispatchDetachedFromWindow 置空，够快。
+     * - isAttachedToWindow()：要等第一帧 traversal 才有，刚弹出来那一两百毫秒还是 false，
+     *   所以给它一个 2 秒的宽限期，否则 ask() 会误判成"没弹出来"。
+     */
     public boolean isShowing() {
-        return showing;
+        if (!showing || root == null) {
+            return false;
+        }
+        if (root.getParent() == null) {
+            return false;      // 窗口已经被系统摘掉了
+        }
+        if (root.isAttachedToWindow()) {
+            return true;
+        }
+        return android.os.SystemClock.uptimeMillis() - shownAt < 2000;
     }
 
     public void show() {
         if (showing) {
-            return;
+            if (isShowing()) {
+                return;      // 真挂着，别重复 addView
+            }
+            // 旗子说在显示，其实窗口早被系统摘掉了。不先清干净就 addView，
+            // 会在 WindowManager 里留一个谁都管不到的死窗口。
+            dismiss();
         }
         try {
             wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
@@ -92,6 +121,7 @@ public class GrillOverlay {
                     | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE;
             wm.addView(root, lp);
             showing = true;
+            shownAt = android.os.SystemClock.uptimeMillis();
             openedAt = System.currentTimeMillis();
             if (input != null) {
                 input.requestFocus();
@@ -111,6 +141,8 @@ public class GrillOverlay {
             ui.postDelayed(tick, 100);
         } catch (Exception e) {
             showing = false;
+            android.util.Log.w("grillme", "overlay.show 失败: " + e.getClass().getName()
+                    + " / " + e.getMessage());
         }
     }
 
@@ -124,6 +156,7 @@ public class GrillOverlay {
         } catch (Exception ignored) {
         }
         root = null;
+        wm = null;
     }
 
     // ------------------------------------------------------------ 界面

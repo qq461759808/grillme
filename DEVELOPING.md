@@ -8,18 +8,33 @@
 ## 0. 一句话现状
 
 两端都已完成并发布在 https://github.com/qq461759808/grillme
-（`v1.1.3` 最新，`v1.1.2` / `v1.1.1` / `v1.1.0` / `v1.0.0` 是前四个版本）：
+（`v1.1.4` 最新，`v1.1.3` / `v1.1.2` / `v1.1.1` / `v1.1.0` / `v1.0.0` 是前五个版本）：
 电脑端是单文件 Python（`grill.py`，约 3500 行）+ PyInstaller 打的 exe；
 安卓端是纯 Java（15 个文件，无 AndroidX、无 Kotlin、无第三方库）。
 四语言词表在 `lang/strings.json`，203 条 × zh/en/ja/ru。
+
+1.1.4 修了三件事：
+
+- **安卓：锁屏解锁后不弹窗**（用户报的）。锁屏时系统把悬浮窗摘掉，但
+  `GrillOverlay.showing` 还是 true，`tickOnce()` 于是永远走"弹窗已经挂着"那条
+  分支，时间涨到 167/60 也不弹新窗，切回 App 才补弹。修法：`isShowing()` 改成
+  真去问窗口还在不在；`ACTION_SCREEN_OFF` 时主动 `dismiss()` 并记下欠一道题
+  （详见 §6.23）。
+- **电脑：收起形态 → 常驻形态**。不再有"收起/展开"这套来回切换，设置里直接选
+  「悬浮条」还是「托盘图标」（`home_mode`），选完就一直是那个样子（§5.2）。
+  老配置的 `collapse_tray` / `pill_collapsed` 会自动迁移。
+- **电脑：托盘菜单的手感**。托盘模式下主窗口是 withdraw 的，而 Tk 的菜单必须挂在
+  已映射的窗口上——这是"右键一下不出来、得点第二下"的根因。现在养了一个 1×1 的
+  透明锚点当菜单的爹，另外加了一条 50ms 的轮询保证"点屏幕任意位置都能关掉"
+  （§6.22）。
 
 1.1.3 修的是 1.1.2 里"托盘图标点了没反应"：
 
 - 用户报：收进托盘之后，图标在、悬停有提示，但左键/双击/右键全都没反应。
 - 定位到：图标注册、消息循环、展开链路全部健康，**唯独 Shell 不投递点击回调**，
-  根因没查到（详见 §6.18）。
+  根因没查到（详见 §6.19）。
 - 修法：不再只靠 Shell——`NIM_SETVERSION(4)` 拿到图标矩形，
-  主线程每 200ms 自己用 `GetAsyncKeyState` + `GetCursorPos` 判断有没有点它。
+  主线程自己用 `GetAsyncKeyState` + `GetCursorPos` 判断有没有点它。
 - `tray_debug.log` 改成默认就写，下次出问题不用再靠猜。
 
 1.1.2 只动了电脑端的收起形态：
@@ -43,7 +58,7 @@
 
 - 小条收起后不再是"白框里一个点"，改成画出来的应用图标（§6.17）。
 - 第二个实例重新弹出「已经在运行」的提示框（§6.14）。
-- 安卓在 B 站/知乎里计时停滞、不弹窗——`sinceLast++` 改成真实时间增量（§6.18）。
+- 安卓在 B 站/知乎里计时停滞、不弹窗——`sinceLast++` 改成真实时间增量（§6.22）。
 - 安卓首页秒数 5 秒才跳一下（§6.19）。
 
 ---
@@ -98,9 +113,9 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 | `webdav_test` / `pick_rest_tip` | 同步与文案 |
 | `Switch` / `ScrollFrame` / `PromptText` / `button` | 手写的 tkinter 小控件 |
 | `AskPopup` | 质问弹窗 |
-| `Pill` | 右下角小条。收起形态二选一：进系统托盘，或缩成 24×24 应用图标（§6.17） |
+| `Pill` | 右下角小条。常驻形态二选一：一直挂着（`"pill"`）或只留托盘图标（`"tray"`），见 `mode()` / `apply_mode()`（§5.2） |
 | `Tray` / `NOTIFYICONDATAW` / `_tray_icon` | 系统托盘图标。**独立线程 + 队列，不能挂 Python 窗口过程**（§6.17） |
-| `build_pill_menu` | 小条和托盘共用的右键菜单 |
+| `build_pill_menu` / `popup_menu` / `_watch_menu_close` | 小条和托盘共用的右键菜单，以及"点屏幕任意位置都能关掉它"的轮询（§6.18） |
 | `autostart_target` / `autostart_get` / `autostart_set` | 开机自启，写 `HKCU\...\Run` |
 | `acquire_single_instance` / `poke_existing` | **单实例锁**（§6.14） |
 | `AskMe` | 主程序：`tick()` 每秒跑一次 |
@@ -182,23 +197,25 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 `AskMe.__init__` 里 `self.root.withdraw()` 把主窗口藏起来了，界面上只有右下角那条药丸。
 所以**用"有没有主窗口"来判断程序是否启动会误判**（`MainWindowHandle` 是 0 是正常的）。
 
-药丸有两种形态，切换在 `collapse()` / `expand()`：
+药丸只有**一种形态**，常驻形态二选一，由设置项 `home_mode` 决定，`apply_mode()` 一次摆好：
 
-| 形态 | 尺寸 | 组成 |
+| `home_mode` | 界面 | 尺寸 |
 |---|---|---|
-| 展开 | 214×40 | `Frame` + 状态点 + 文字，白底细边框 |
-| 收起（悬浮） | 24×24 | 一个 `Canvas` 贴的应用图标本体，右下角一个小圆点当状态灯 |
-| 收起（托盘） | — | 窗口 `withdraw()`，改用系统托盘图标；悬停显示状态文字 |
+| `"pill"`（默认） | 右下角小条一直挂着 | 214×40 |
+| `"tray"` | 窗口 `withdraw()`，只留系统托盘图标；悬停显示状态文字 | — |
 
-收起成哪种由设置项 `collapse_tray` 决定（1 = 托盘，0 = 悬浮方块），
-**托盘注册不上时自动退回悬浮方块**（`Pill._use_tray()`）。
+1.1.4 之前这里有两套动作：`collapse()` / `expand()`，收起后又分"进托盘"和"缩成
+24×24 小方块"。用户的原话是「这种悬浮条和托盘图标的切换太奇怪了」——点托盘图标
+小条冒出来、点「收起来」又没了，来回切。**别再把它改回去**：要么一直看得见，
+要么老实待在托盘里，中间态没有价值。
 
-收起态的定位按**右下边缘**算（`self._right` / `self._bottom`），不是左上角——
+托盘注册不上时 `mode()` 自动返回 `"pill"`，否则设成 `"tray"` 就彻底没界面了。
+
+定位按**右下边缘**算（`self._right` / `self._bottom`），不是左上角——
 不然宽高一变，小条就一边缩一边往左上跳。拖拽时同步更新这两个值。
 
-`flash()` 在三种状态下都要给动静：展开时闪窗口边框，悬浮方块闪状态点
-（`itemconfig(self.mini_dot, fill=...)`），收进托盘时闪不了——只能靠
-`poke_existing()` 把窗口叫出来再闪，否则用户被拦下来时什么提示都看不到。
+`reveal()` 管"有人又双击了一次 exe"：小条模式下闪边框，托盘模式下图标闪不了，
+只能把悬停提示临时改成「我在这儿」，5 秒后改回来。
 
 ### 5.3 打包后才有意义的两段代码
 
@@ -554,6 +571,84 @@ SharedPreferences，而 `saveEvery()` 是**每 5 秒**才落盘一次。界面�
 `android/app/build.gradle` 的 `versionCode` / `versionName` 没跟着动。
 发版清单里必须包含这一项，否则用户没法判断自己装的是哪一版。
 
+顺带一个坑：`adb install` 在 `versionCode` 没升的时候会报
+`INSTALL_FAILED_VERSION_DOWNGRADE`，但**错误信息是空的**（只显示 `failed to install`）。
+调试时加 `-d` 允许降级，发版时老老实实把 `versionCode` 加一。
+
+### 6.22 托盘右键菜单：三个"为什么"
+
+用户原话：「有时候右键一下不出来菜单，得再右键一下」「菜单出来后没办法点击屏幕
+任意位置消失，必须点个按键才行，但悬浮条的就可以」。
+
+三条结论都是实测出来的：
+
+**一、Tk 的菜单必须挂在一个已经映射到屏幕上的窗口上。**
+托盘模式下 `AskApp.root` 是 `withdraw()` 的，`tk.Menu(root)` 弹在它上面就出不来
+——`winfo_ismapped()` 一直是 0、尺寸一直是 1×1。这就是"第一次点不出来"。
+修法：`Tray._make_anchor()` 养一个 1×1、`-alpha 0.01`、`overrideredirect` 的
+Toplevel 当菜单的爹，弹之前把它挪到鼠标位置并 `focus_force()`。
+
+**二、`tk_popup` 是阻塞的。**
+它在内部跑一个嵌套事件循环，菜单没关就不返回。所以任何"弹完再做点什么"的代码
+都排在它后面，等于永远不会执行。要轮询"用户有没有点别处"，必须**先**把轮询排
+进事件队列（`root.after`），**再**调 `tk_popup`。嵌套循环里 `after` 回调照常跑。
+
+**三、`GetAsyncKeyState` 的低位是"读一次就清"。**
+托盘兜底轮询（`Tray._watch`）和菜单轮询（`_watch_menu_close`）都要读它，谁先读
+谁把点击吃掉，另一条链就永远等不到。用模块级计数 `_MENU_WATCH` 隔开：菜单开着
+的时候 `_watch` 不碰键盘状态。
+
+菜单本身还是 Tk 的 `tk.Menu`，没换成 Win32 `TrackPopupMenu`——后者的焦点语义在
+"没有活动窗口"的场景下更容易出岔子，而 Tk 这条路的显示问题已经被锚点解决了。
+"点外面关掉"由 `_watch_menu_close` 每 50ms 轮询保证，不依赖任何焦点信号。
+
+**这台机器没法验证菜单交互**：会话是非交互桌面（`ImageGrab` 全黑、
+`mouse_event` 注入的按键 `GetAsyncKeyState` 读不到、Tk 菜单映射不出来直接挂住）。
+形态切换、菜单条目、菜单对象构造是程序化自检验证过的（`grilltest/selftest_mode.py`），
+"点一下菜单出来、点外面关掉"只能靠上面三条推理 + 用户实测。
+
+### 6.23 安卓：锁屏解锁后不弹窗
+
+用户复现路径：「"质问我"在后台 → 锁屏 → 解锁 → 直接开 B 站 → 不弹窗；
+切回"质问我"的一瞬间才突然弹出来」。
+
+实测日志（`adb logcat -s grillme`）：
+
+```
+ask kind=normal showing=true                    ← 锁屏前弹窗挂着
+屏幕事件 SCREEN_OFF since=62 nextDue=60
+屏幕事件 SCREEN_ON  since=62 nextDue=60
+屏幕事件 USER_PRESENT since=63 nextDue=60
+tick dt=1 active=1517 since=167/60 overlay=true canPopup=true app=tv.danmaku.bili
+```
+
+`since` 涨到 167/60 还不弹，说明 `tickOnce()` 一直命中这一条：
+
+```java
+if (overlay != null && overlay.isShowing()) { ...; return; }   // 弹窗挂着，先不管
+```
+
+**根因**：锁屏时系统把 `TYPE_APPLICATION_OVERLAY` 的窗口摘掉了，但
+`GrillOverlay.showing` 这个旗子没人复位，`isShowing()` 又只返回这个旗子。
+
+**修法**（三处，缺一不可）：
+
+1. `GrillOverlay.isShowing()` 真去问窗口还在不在：`root.getParent() != null`
+   且（`isAttachedToWindow()` 或刚弹出来不到 2 秒）。加那 2 秒宽限是因为
+   `addView()` 返回时窗口还没 attach，下一帧才有——不然 `ask()` 会立刻误判成
+   "没弹出来"，铃声不响、15 秒后重复弹。
+2. `screenRx` 处理 `ACTION_SCREEN_OFF`：有 overlay 就 `dismiss()`，并
+   `pending = true` 把"欠着的那道题"记下来，解锁回来接着问。
+3. `ACTION_USER_PRESENT` 再兜一次：窗口已经不在的残留对象直接扔掉。
+
+另外给 `ask()` 加了失败退避（`askFailAt`，15 秒）：`sinceLast` 一直 ≥ `nextDue`
+的时候，每一拍都会重新 `ask()`，而 `ask()` 里带截图——不拦就是一秒一张，手机发烫。
+
+验证方法：`adb shell input keyevent 26` 锁屏 → 等 15 秒 → 上滑两下 + 盲打密码 +
+回车解锁 → `adb shell monkey -p tv.danmaku.bili -c android.intent.category.LAUNCHER 1`
+→ 看日志里有没有 `ask kind=back showing=true`，再截图确认弹窗盖在 B 站上。
+（锁屏界面截图是全黑的，系统安全策略，只能盲打。）
+
 ---
 
 ## 7. 构建与发布
@@ -583,15 +678,16 @@ EOF
 
 ```bash
 # 源码直接跑（需要带 tkinter 的 Python，见 §8）
-python grill.py --selftest     # 环境自检
-python grill.py --demo         # 立刻弹一次
+"/d/Program Files/Python314/python.exe" grill.py --selftest   # 环境自检
+"/d/Program Files/Python314/python.exe" grill.py --demo       # 立刻弹一次
 
-# 打 exe
-pyinstaller --noconfirm --clean --onefile --windowed --name GrillMe \
+# 打 exe（用同一个解释器，别用 PATH 里那个——它没有 tkinter）
+"/d/Program Files/Python314/python.exe" -m PyInstaller \
+  --noconfirm --clean --onefile --windowed --name GrillMe \
   --icon build/res/grill.ico --version-file build/res/version_info.txt grill.py
 ```
 
-`--onefile` 单文件 13.0 MB、启动 0.5 秒。图标从 `docs/icon-512.png` 用 Pillow 转多尺寸 ico。
+`--onefile` 单文件 13.7 MB、启动 0.5 秒。图标从 `docs/icon-512.png` 用 Pillow 转多尺寸 ico。
 体积构成：python314.dll 6.5 MB + OpenSSL 7.0 MB（WebDAV 走 HTTPS）+ Tcl/Tk 5.3 MB。
 **裁掉用不到的标准库模块只省 5 KB**，别在这上面浪费时间。
 
@@ -615,11 +711,11 @@ cd android && gradle assembleRelease
 5. `git tag`、push、传 release 附件。
 
 ```bash
-git tag -f v1.1.3 && git push <remote> main:main "+refs/tags/v1.1.3:refs/tags/v1.1.3"
+git tag -f v1.1.4 && git push <remote> main:main "+refs/tags/v1.1.4:refs/tags/v1.1.4"
 ```
 
 `dist/` 被 `.gitignore` 排除——二进制只进 release 附件，不进源码树。
-附件命名：`grillme-1.1.3-win64.zip`（exe + 文档）、`grillme-1.1.3.apk`、`grillme-1.1.3.zip`（安卓 + 文档）。
+附件命名：`grillme-1.1.4-win64.zip`（exe + 文档）、`grillme-1.1.4.apk`、`grillme-1.1.4.zip`（安卓 + 文档）。
 **只改电脑端时，安卓那两个附件不用重出**，release 里沿用上一版即可——但要在说明里写清楚。
 
 ---
@@ -694,9 +790,12 @@ SharedPreferences 就先 `assembleDebug` 装一版。
 
 ## 10. 待办与已知缺口
 
-- **托盘点击的根因还没查到**（§6.18）：1.1.3 用轮询兜底绕过去了，功能可用，
+- **托盘点击的根因还没查到**（§6.19）：1.1.3 用轮询兜底绕过去了，功能可用，
   但"为什么 Shell 一条回调都不发"仍然不明。如果以后遇到同样症状的托盘程序，
   这条线索值得继续挖。
+- **托盘菜单的交互没在真机上验过**（§6.22）：锚点 + 轮询这两条都是推理出来的，
+  这台开发机的桌面是非交互的，Tk 菜单根本映射不出来。下次有机会请用户实测：
+  右键一下能不能出、点别处能不能收、菜单开着时再右键会不会叠。
 - **兜底轮询在「^」面板收起时无能为力**：拿不到图标矩形就没法判断。此时用户
   点开「^」再点图标即可（面板一展开矩形就有了）。日志里会留一条记录。
 - **电脑端还没接 `lang/strings.json`**：UI 里约 340 条中文字符串（去重 307）是硬编码的，日/俄没翻。
@@ -726,17 +825,20 @@ SharedPreferences 就先 `assembleDebug` 装一版。
 - **不做 AI 分析回答**——要联网、要花钱，违背"离线可用"。
 - **电脑端不引第三方包**——只用标准库，所以截图手写 GDI+、HTTP 手写 WebDAV。
   想引 PIL/requests 之前先想清楚：这会毁掉"解压即用、不装依赖"这个前提。
-- **小条「收起」有两个形态，都必须留**：默认收进系统托盘（桌面上什么都不留），
-  设置里可以改成缩成右下角一个 24×24 的小方块。两个都不能砍——
-  藏起来用户就找不到，转头会再双击一次 exe，然后又变成两个实例（§6.14）；
-  而托盘在某些机器上会被策略禁掉，`Pill._use_tray()` 会自动退回悬浮方块。
-  **收起图标必须是应用图标本体**，不是圆环、不是白框里一个点——
-  试过蓝色圆环，用户说"这个小眼睛不如小方块"，见 §6.17。
+- **小条的形态是「常驻二选一」，不要再加"收起/展开"**：设置里 `home_mode` 选
+  「悬浮条」或「托盘图标」，选完就一直是那个样子。1.1.4 之前那套
+  「点托盘图标把小条叫出来、点收起来又没了」的来回切换，用户的原话是
+  「太奇怪了」。藏起来用户就找不到，转头会再双击一次 exe，然后又变成两个实例
+  （§6.14）——所以要留托盘这条路；而托盘在某些机器上会被策略禁掉，
+  `Pill.mode()` 会自动退回悬浮条。两边都是兜底，不是可选装饰。
 - **托盘的窗口过程不能改回 Python 回调**——会在点第一下的时候把进程打崩（§6.17）。
   看着"这样写更直观"，实际是个必崩的写法。
 - **托盘点击不能只靠 Shell 投递**——用户的机器上 Shell 一条回调都不发，
-  而图标注册一切正常（§6.18）。`Tray._watch()` 那条轮询看着像补丁，其实是必需的：
+  而图标注册一切正常（§6.19）。`Tray._watch()` 那条轮询看着像补丁，其实是必需的：
   少了它，在那种环境下整个托盘形态就是块死图标。
+- **托盘菜单的爹必须是那个 1×1 锚点，不能改回 `root`**（§6.22）：托盘模式下
+  `root` 是 withdraw 的，菜单挂在它上面根本不显示。同理，`popup_menu()` 里的
+  轮询必须排在 `tk_popup` **之前**——`tk_popup` 会阻塞，写在后面等于没写。
 - **单实例锁不能去掉，第二个实例的消息框也不能去掉**——见 §6.14。两者是一套的：
   锁负责不让它跑起来，框负责让用户知道为什么没跑起来。而且第二个实例写的
   `wake.flag` 是托盘的兜底出口：万一托盘图标点不动，再双击一次 exe 就能把小条叫出来。

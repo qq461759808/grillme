@@ -137,9 +137,8 @@ DEFAULTS = {
     "cooldown_seconds": 3.0,
     # 弹窗
     "show_moyu": 1,
-    # 常驻形态
-    "collapse_tray": 1,
-    "pill_collapsed": 0,
+    # 常驻形态："pill" = 右下角小条一直挂着；"tray" = 只留任务栏托盘图标
+    "home_mode": "pill",
     # 提醒
     "sound": 1,
     "sound_uri": "beep",
@@ -209,6 +208,16 @@ def load_cfg():
             pass
     if "beep" in raw and "sound" not in raw:
         raw["sound"] = int(bool(raw["beep"]))
+    # 1.1.4 之前是「收起形态」两个键（collapse_tray + pill_collapsed），
+    # 现在合并成一个「常驻形态」单选。老用户按他上次的状态迁移过来：
+    # 上次收进托盘 → "tray"；其它情况（展开着 / 缩成小方块）→ "pill"。
+    if "home_mode" not in raw:
+        try:
+            was_collapsed = int(raw.get("pill_collapsed", 0)) == 1
+            use_tray = int(raw.get("collapse_tray", 1)) == 1
+        except Exception:
+            was_collapsed, use_tray = False, True
+        raw["home_mode"] = "tray" if (was_collapsed and use_tray) else "pill"
     # 早期把 WebDAV 密码单独存在 sync.json，现在统一进 config.json
     legacy = load_json(SYNC_PATH, {})
     if isinstance(legacy, dict):
@@ -1308,24 +1317,26 @@ class Pill:
     """
     右下角那条状态小条。
 
-    能收起来——不是隐藏。隐藏起来用户就找不到了，转头又双击一次 exe，于是两个
-    实例并排跑（这正是"两条时间线"的老毛病）。
+    只有一种形态：214×40 的小条，一直挂在右下角。
 
-    收起后有两种形态，设置里选（`collapse_tray`）：
+    以前这里还有"收起/展开"两套动作，收起后又分"进托盘"和"缩成小方块"两条路，
+    结果就是——用户点一下托盘图标，小条冒出来；再点一下「收起来」，又没了。
+    这个来回切换的手感很怪，而且"收起"这个动作本身没有意义：要么你希望桌面上
+    有个东西随时能看见，要么你希望它老老实实待在托盘里。
 
-    - **系统托盘图标**（默认）：真正进任务栏托盘，不占桌面。Win11 会把新注册的
-      图标先塞进「^」溢出面板，`Tray._promote()` 会把它提到任务栏上；提不上来
-      时用户还能去「任务栏设置 → 其他系统托盘图标」手动打开。
-      左键点图标 = 展开，右键 = 菜单。
-    - **悬浮小方块**：24×24，就是应用图标本身（深色方块 + 橙色对话框），
-      右下角一个小圆点表示状态。托不起托盘的时候自动退到这条。
+    所以现在改成**常驻形态**，设置里单选（`home_mode`）：
 
-    两种形态都收得回来：托盘靠点图标，小方块靠点它自己；万一都不行，
-    再双击一次 exe 也会把它叫出来（见 `poke_existing`）。
+    - **"pill"**：小条一直挂在右下角。
+    - **"tray"**：小条整个收掉，只留任务栏托盘图标。Win11 会把新注册的图标先
+      塞进「^」溢出面板，`Tray._promote()` 会把它提到任务栏上；提不上来时用户
+      还能去「任务栏设置 → 其他系统托盘图标」手动打开。
+      左键点图标 = 打开记录窗口，右键 = 菜单。
+
+    托盘注册不上的机器自动退回 "pill"——不然设成托盘就彻底没有界面了。
     """
 
     W, H = 214, 40
-    MINI = 24
+    MINI = 24      # 老版"缩成小方块"的尺寸，只留给 flash() 兜底，不再使用
 
     def __init__(self, app):
         self.app = app
@@ -1376,51 +1387,35 @@ class Pill:
         bind_tree(w, "<Button-3>", self._menu)
 
     def _apply(self):
-        w, h = (self.MINI, self.MINI) if self.collapsed else (self.W, self.H)
         try:
-            self.win.geometry(f"{w}x{h}+{self._right - w}+{self._bottom - h}")
+            self.win.geometry(
+                f"{self.W}x{self.H}+{self._right - self.W}+{self._bottom - self.H}")
             self.win.lift()
         except Exception:
             log_error(traceback.format_exc())
 
-    def _use_tray(self):
-        """这一版该收进托盘还是缩成悬浮小图标。托盘注册不上就退回悬浮。"""
-        return bool(int(self.app.cfg.get("collapse_tray", 1))) and self.app.tray_ok()
+    def mode(self):
+        """当前常驻形态："pill"（右下角小条）或 "tray"（只留托盘图标）。
 
-    def _remember(self, flag):
-        """记住"收着"还是"展开"，下次启动照原样来。
-
-        不然每次开机都得手动再收一遍——用托盘的人尤其烦这个。
+        托盘注册不上的机器一律退回 "pill"——否则设成 "tray" 就彻底没有界面了，
+        用户连设置都打不开。
         """
-        try:
-            if int(self.app.cfg.get("pill_collapsed", 0)) != flag:
-                self.app.cfg["pill_collapsed"] = flag
-                save_cfg(self.app.cfg)
-        except Exception:
-            pass
+        m = str(self.app.cfg.get("home_mode", "pill"))
+        if m == "tray" and not self.app.tray_ok():
+            return "pill"
+        return "tray" if m == "tray" else "pill"
 
-    def collapse(self):
-        if self.collapsed:
-            return
-        self.collapsed = True
-        self._remember(1)
-        if self._use_tray():
-            # 进托盘：小条整个收掉，桌面上什么都不留
+    def apply_mode(self):
+        """按设置把界面摆成对应形态。启动时调一次，改完设置再调一次。"""
+        if self.mode() == "tray":
+            self.collapsed = True
             try:
                 self.win.withdraw()
             except Exception:
                 pass
             self.app.tray_show(self.lbl.cget("text"))
             return
-        self.outer.pack_forget()
-        self.icon.pack()
-        self._apply()
-
-    def expand(self):
-        if not self.collapsed:
-            return
         self.collapsed = False
-        self._remember(0)
         self.app.tray_hide()
         try:
             self.win.deiconify()
@@ -1430,11 +1425,35 @@ class Pill:
         self.outer.pack(fill="both", expand=True, padx=1, pady=1)
         self._apply()
 
-    def toggle(self):
+    def toggle_mode(self):
+        """菜单里的「改用悬浮条 / 改用托盘图标」。
+
+        改的是设置本身，不是"临时展开一下"——切完下次启动还是这个形态，
+        用户不会觉得程序在自作主张。
+        """
+        new = "pill" if self.mode() == "tray" else "tray"
+        if new == "tray" and not self.app.tray_ok():
+            messagebox_info(self.win, "托盘不可用",
+                            "这台机器注册不上系统托盘图标，只能用悬浮条。")
+            return
+        self.app.cfg["home_mode"] = new
+        save_cfg(self.app.cfg)
+        self.apply_mode()
+
+    def reveal(self):
+        """有人又双击了一次 exe：让他看见我。
+
+        悬浮条模式下闪边框；托盘模式下图标没法闪，就把悬停提示改一下，
+        几秒后改回来——至少鼠标扫过去能看见"我在这儿"。
+        """
         if self.collapsed:
-            self.expand()
-        else:
-            self.collapse()
+            try:
+                self.app.tray_tip("我在这儿，右键有菜单")
+                self.win.after(5000, lambda: self.app.tray_tip(self.lbl.cget("text")))
+            except Exception:
+                pass
+            return
+        self.flash()
 
     def flash(self, times=3):
         """闪几下边框。用户多半是没找到这条才又双击了一次 exe，得给点动静。"""
@@ -1476,18 +1495,12 @@ class Pill:
 
     def _release(self, _=None):
         if not self._moved:
-            if self.collapsed:
-                self.expand()
-            else:
-                self.app.open_history()
+            self.app.open_history()
         self._drag = None
 
     def _menu(self, e):
-        m = build_pill_menu(self.app, self.win, self.collapsed)
-        try:
-            m.tk_popup(e.x_root, e.y_root)
-        finally:
-            m.grab_release()
+        m = build_pill_menu(self.app, self.win)
+        popup_menu(self.app, m, e.x_root, e.y_root)
 
     def set_state(self, text, color):
         try:
@@ -1499,13 +1512,13 @@ class Pill:
             # 收起后没有文字，状态全靠右下角那个小圆点的颜色表达
             self.icon.itemconfig(self.mini_dot, fill=color)
             # 收进托盘时，状态靠鼠标悬停的提示文字
-            if self.collapsed and self._use_tray():
+            if self.collapsed:
                 self.app.tray_tip(text)
         except Exception:
             pass
 
 
-def build_pill_menu(app, parent, collapsed):
+def build_pill_menu(app, parent):
     """小条右键菜单。小条和托盘图标共用同一份——两处各写一份迟早会走岔。"""
     m = tk.Menu(parent, tearoff=0)
     m.add_command(label="看记录", command=app.open_history)
@@ -1522,11 +1535,102 @@ def build_pill_menu(app, parent, collapsed):
     m.add_command(label="今天不再提醒", command=app.pause_until_tomorrow)
     m.add_command(label="立刻恢复", command=lambda: app.pause(0))
     m.add_separator()
-    m.add_command(label="展开小条" if collapsed else "收起来",
-                  command=app.toggle_pill)
+    if app.pill.mode() == "tray":
+        m.add_command(label="改用悬浮条", command=app.toggle_pill)
+    else:
+        m.add_command(label="改用托盘图标", command=app.toggle_pill)
     m.add_command(label="设置", command=app.open_settings)
     m.add_command(label="退出", command=app.quit)
     return m
+
+
+def popup_menu(app, menu, x, y):
+    """弹出菜单，并且保证"点屏幕上任何地方都能关掉它"。
+
+    为什么不直接 `tk_popup` 完事：Tk 在 Windows 上是靠"菜单窗口失去焦点"来收
+    菜单的。小条那边没问题——小条是个活动窗口，点别处它立刻失焦。托盘图标那边
+    不行：应用根本没有活动窗口，菜单拿不到焦点，也就永远等不到那个信号。用户
+    看到的就是"点屏幕任意位置都不消失，非得随便按个键"。
+
+    所以不指望 Tk 自己收：每 50ms 自己看一眼鼠标，只要有一次按下落在菜单矩形
+    外面就 unpost。50ms 的延迟人感觉不出来，但它是确定生效的——GetAsyncKeyState
+    是全系统级的，跟焦点、跟 grab 都没关系。
+
+    **顺序很重要**：`tk_popup` 是阻塞的——它在内部跑一个嵌套事件循环，直到菜单
+    被关掉才返回。所以轮询必须**先排上**再去调 tk_popup，写在它后面等于永远不
+    执行。（这个坑实测踩到过：菜单弹出来，点别处纹丝不动，日志里一条都没有。）
+    """
+    global _MENU_WATCH
+    _MENU_WATCH += 1
+    app.root.after(50, lambda: _watch_menu_close(app, menu, 0, 0))
+    try:
+        menu.tk_popup(x, y)
+    finally:
+        # tk_popup 会顺手 grab_set，我们不靠 grab 维持菜单（见上面的注释），
+        # 立刻放开，免得它把别处的点击吃掉
+        try:
+            menu.grab_release()
+        except Exception:
+            pass
+    tray_dbg(f"菜单已关闭 ({x},{y})")
+
+
+# 正在轮询"点外面关菜单"的链条数。
+#
+# 这个数字存在的唯一原因：托盘那边的兜底轮询（`Tray._watch`）也在读
+# GetAsyncKeyState，而"自上次调用以来按下过"这个标志位是**读一次就清**的。
+# 两条链同时读，谁先读到谁把点击吃掉——菜单那边就永远等不到"用户点了别处"。
+# 所以菜单开着的时候，让兜底轮询闭嘴。
+_MENU_WATCH = 0
+
+
+def _watch_menu_close(app, menu, ticks, mapped):
+    """`popup_menu` 的收尾轮询。mapped 用来判断菜单是不是已经自己关掉了。"""
+    global _MENU_WATCH
+
+    def quit_watch():
+        global _MENU_WATCH
+        _MENU_WATCH = max(0, _MENU_WATCH - 1)
+
+    try:
+        if not menu.winfo_exists():
+            quit_watch()
+            return
+        if ticks == 0:
+            tray_dbg("菜单轮询启动")
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.GetAsyncKeyState.restype = ctypes.c_short
+        down = bool(u.GetAsyncKeyState(VK_LBUTTON) & 0x0001) or \
+            bool(u.GetAsyncKeyState(VK_RBUTTON) & 0x0001)
+        if down:
+            p = wintypes.POINT()
+            u.GetCursorPos(ctypes.byref(p))
+            mx, my = menu.winfo_rootx(), menu.winfo_rooty()
+            mw, mh = menu.winfo_width(), menu.winfo_height()
+            if not (mx <= p.x < mx + mw and my <= p.y < my + mh):
+                try:
+                    menu.unpost()
+                except Exception:
+                    pass
+                tray_dbg(f"菜单：点到矩形外 ({p.x},{p.y})，收起")
+                quit_watch()
+                return
+        if menu.winfo_ismapped():
+            mapped = 1
+        elif mapped:
+            tray_dbg("菜单：自己关了（点了某项或按了 Esc）")
+            quit_watch()
+            return          # 菜单自己关了（点了某项 / 按了 Esc），别管了
+        if ticks > 600:     # 兜底：半分钟还没关，收掉，别一直挂着轮询
+            try:
+                menu.unpost()
+            except Exception:
+                pass
+            quit_watch()
+            return
+        app.root.after(50, lambda: _watch_menu_close(app, menu, ticks + 1, mapped))
+    except Exception:
+        quit_watch()
 
 
 # ---------------------------------------------------------------- 系统托盘
@@ -1700,8 +1804,12 @@ class Tray:
         self._ready = threading.Event()
         self._thread = None
         self._last_tip = tip or "质问我"
-        # 兜底检测用：最近一次收到托盘消息的时间
+        # 兜底检测用：最近一次收到托盘消息的时间（只写进日志，不参与判断）
         self._last_evt = 0.0
+        # 当前挂着的托盘菜单。兜底轮询靠它判断"菜单开着没有"。
+        self._menu_win = None
+        # 菜单的爹（见 _make_anchor）
+        self._anchor = None
         try:
             try:
                 os.remove(os.path.join(DATA_DIR, "tray_debug.log"))
@@ -1717,11 +1825,32 @@ class Tray:
             self.ok = self._add(self._last_tip)
             if self.ok:
                 self.remove()
+            self._make_anchor()
             self.app.root.after(150, self._pump)
             self.app.root.after(300, self._watch)
         except Exception:
             log_error(traceback.format_exc())
             self.ok = False
+
+    def _make_anchor(self):
+        """托盘菜单的"锚点"窗口。
+
+        Tk 的菜单必须挂在一个**已经映射到屏幕上**的窗口上。托盘模式下主窗口是
+        withdraw 的，菜单挂在它上面就出不来——表现就是"右键一下没反应，得再点
+        一下"。所以专门养一个 1×1、几乎全透明、置顶的小窗口当爹：它一直映射着，
+        菜单挂上去能正常显示，也能拿到焦点；拿到焦点，"点别处自动收"才有戏。
+        """
+        try:
+            a = tk.Toplevel(self.app.root)
+            a.overrideredirect(True)
+            a.attributes("-topmost", True)
+            a.attributes("-alpha", 0.01)
+            a.geometry("1x1+-20+-20")
+            a.deiconify()
+            self._anchor = a
+        except Exception:
+            self._anchor = None
+            log_error(traceback.format_exc())
 
     # ---- 后台线程：建窗口 + 取消息
 
@@ -1812,12 +1941,14 @@ class Tray:
                 kind, ev = self._q.get_nowait()
                 tray_dbg(f"pump 取到 {kind} ev=0x{ev:X}")
                 if kind == "click":
-                    pill = getattr(self.app, "pill", None)
                     if ev in (WM_LBUTTONUP, WM_LBUTTONDBLCLK,
                               NIN_SELECT, NIN_KEYSELECT):
-                        if pill is not None:
-                            tray_dbg("→ 展开小条")
-                            pill.expand()
+                        # 左键 = 打开记录窗口。以前这里是"把悬浮条叫出来"，
+                        # 于是点一下桌面多一条、再点「收起来」又没了——那个来回
+                        # 切换的手感就是用户抱怨的那个。现在形态由设置决定，
+                        # 左键干一件别的软件都这么干的事。
+                        tray_dbg("→ 打开记录窗口")
+                        self.app.open_history()
                     elif ev == WM_RBUTTONUP:
                         self._menu()
                 elif kind == "menu":
@@ -1831,7 +1962,10 @@ class Tray:
             log_error(traceback.format_exc())
         if not self._stop:
             try:
-                self.app.root.after(150, self._pump)
+                # 60ms 一拍：从"点了"到"菜单出来"最多 60ms，手感跟别的软件一样。
+                # 原来是 150ms，再加上 _watch 的 200ms，最坏要等三分之一秒，
+                # 用户会以为没点上，于是再点一次——这就是"有时候要右键两下"。
+                self.app.root.after(60, self._pump)
             except Exception:
                 pass
 
@@ -1864,27 +1998,33 @@ class Tray:
     def _watch(self):
         """万一 Shell 一条回调都不发，点击就永远不会生效。
 
-        所以主线程自己每 200ms 看一眼：左键/右键是不是"刚按下过"、光标是不是
+        所以主线程自己每 100ms 看一眼：左键/右键是不是"刚按下过"、光标是不是
         正好落在图标矩形里。是的话就当成"点了图标"。
 
         用 `GetAsyncKeyState` 的**低位**（自上次调用以来按下过）而不是比对
-        按下/松开状态：一拍 200ms，手快一点的人按下又松开都在这一拍里完成，
-        比对状态会整个漏掉。反过来说，正因为靠这个标志位，慢一点轮询也不会
-        漏——所以这里能省点电。
+        按下/松开状态：手快一点的人按下又松开都在这一拍里完成，比对状态会整个
+        漏掉。反过来说，正因为靠这个标志位，慢一点轮询也不会漏。
 
-        收到过真实回调时（`_last_evt` 在 0.5 秒内）就不插手，免得两套机制
-        互相打架——虽然 `expand()` 本身是幂等的。
+        以前这里还有一道 `_last_evt` 去抖（"0.5 秒内收到过真实回调就别插手"），
+        那个是坑：用户点完菜单里的某一项，紧接着再右键图标，还在 0.5 秒内，
+        兜底就被自己屏蔽了——如果 Shell 这次又没投递，就表现为"要右键两下"。
+        现在改成只看"菜单是不是正开着"，该不该出手一目了然。
         """
         try:
             u = ctypes.WinDLL("user32", use_last_error=True)
             u.GetAsyncKeyState.restype = ctypes.c_short
             u.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
-            # 不管图标在不在，都要调一次把"按下过"的标志位吃掉；
-            # 否则展开期间攒下的点击会在刚收起的下一拍被误判成"点了图标"。
-            lp = u.GetAsyncKeyState(VK_LBUTTON) & 0x0001
-            rp = u.GetAsyncKeyState(VK_RBUTTON) & 0x0001
+            # 菜单开着的时候不要碰这个标志位：读一次就清，菜单那条链就再也
+            # 收不到"用户点了别处"（见 _MENU_WATCH 的注释）。
+            if _MENU_WATCH > 0:
+                lp = rp = 0
+            else:
+                # 不管图标在不在，都要调一次把"按下过"的标志位吃掉；
+                # 否则别处攒下的点击会在下一拍被误判成"点了图标"。
+                lp = u.GetAsyncKeyState(VK_LBUTTON) & 0x0001
+                rp = u.GetAsyncKeyState(VK_RBUTTON) & 0x0001
             if (lp or rp) and self._added and not self._stop:
-                if time.monotonic() - self._last_evt > 0.5:
+                if not self.menu_open():
                     rect = self._icon_rect()
                     if not rect:
                         tray_dbg("兜底：点了鼠标但拿不到图标矩形，判断不了")
@@ -1893,7 +2033,7 @@ class Tray:
                         u.GetCursorPos(ctypes.byref(p))
                         if rect[0] <= p.x < rect[2] and rect[1] <= p.y < rect[3]:
                             if lp:
-                                tray_dbg("兜底：光标在图标矩形里点了一下 → 展开小条")
+                                tray_dbg("兜底：光标在图标矩形里点了一下 → 开记录")
                                 self._q.put(("click", WM_LBUTTONUP))
                             else:
                                 tray_dbg("兜底：光标在图标矩形里右键 → 出菜单")
@@ -1902,9 +2042,21 @@ class Tray:
             pass
         if not self._stop:
             try:
-                self.app.root.after(200, self._watch)
+                self.app.root.after(100, self._watch)
             except Exception:
                 pass
+
+    def menu_open(self):
+        """托盘菜单现在是不是开着。开着的时候兜底就别再插手了。"""
+        m = self._menu_win
+        if m is None:
+            return False
+        try:
+            if not m.winfo_exists():
+                return False
+            return bool(m.winfo_ismapped())
+        except Exception:
+            return False
 
     # ---- 加/删图标
 
@@ -2049,11 +2201,26 @@ class Tray:
 
     def _menu(self):
         x, y = self.app.root.winfo_pointerxy()
-        m = build_pill_menu(self.app, self.app.root, True)
-        try:
-            m.tk_popup(x, y)
-        finally:
-            m.grab_release()
+        # 已经开着一个就先收掉，别叠出第二个菜单
+        if self.menu_open():
+            try:
+                self._menu_win.unpost()
+            except Exception:
+                pass
+        parent = self.app.root
+        if self._anchor is not None:
+            try:
+                # 把锚点挪到鼠标位置并抢一下焦点：菜单贴着它弹出来，
+                # 焦点在锚点上，"点别处"才会把菜单带走
+                self._anchor.geometry(f"1x1+{x}+{y}")
+                self._anchor.lift()
+                self._anchor.focus_force()
+                parent = self._anchor
+            except Exception:
+                parent = self.app.root
+        m = build_pill_menu(self.app, parent)
+        self._menu_win = m
+        popup_menu(self.app, m, x, y)
 
 
 # ---------------------------------------------------------------- 开机自启
@@ -2207,13 +2374,12 @@ class AskMe:
         self._restore_state()
         self.tray = Tray(self)
         self.pill = Pill(self)
-        if int(self.cfg.get("pill_collapsed", 0)):
-            # 上次是收着的，这次也收着——但别在窗口还没画好之前就收
-            self.root.after(400, self.pill.collapse)
+        # 别在窗口还没画好之前就收进托盘，等 400ms
+        self.root.after(400, self.pill.apply_mode)
         self.root.after(1000, self.tick)
         self.root.after(1200, self._startup_chores)
 
-    # ---------------- 收起形态
+    # ---------------- 常驻形态
 
     def tray_ok(self):
         return bool(self.tray and self.tray.ok)
@@ -2235,19 +2401,12 @@ class AskMe:
             self.tray.set_tip(text)
 
     def toggle_pill(self):
-        self.pill.toggle()
+        """菜单里切换常驻形态（悬浮条 ↔ 托盘图标）。"""
+        self.pill.toggle_mode()
 
-    def apply_collapse_mode(self):
-        """设置里换了收起形态之后立刻生效。
-
-        只在**已经收着**的时候按新形态重收一次，好让人当场看见区别。
-        如果小条是展开的，就不动它——万一托盘图标在某人机器上点不动，
-        强行收起来等于把人关在门外。展开状态下改设置，下次收起来时用新形态。
-        """
-        if not self.pill.collapsed:
-            return
-        self.pill.expand()
-        self.pill.collapse()
+    def apply_home_mode(self):
+        """设置里换了常驻形态之后立刻生效，让人当场看见区别。"""
+        self.pill.apply_mode()
 
     def _startup_chores(self):
         try:
@@ -2443,8 +2602,7 @@ class AskMe:
                 os.remove(WAKE_PATH)
             except OSError:
                 pass
-            self.pill.expand()
-            self.pill.flash()
+            self.pill.reveal()
 
         self._refresh_pill(in_use, label, color)
 
@@ -2566,8 +2724,8 @@ class AskMe:
 
     def apply_settings(self, new_cfg):
         old_due = self.next_due
-        mode_changed = (int(self.cfg.get("collapse_tray", 1))
-                        != int(new_cfg.get("collapse_tray", 1)))
+        mode_changed = (str(self.cfg.get("home_mode", "pill"))
+                        != str(new_cfg.get("home_mode", "pill")))
         self.cfg.update(new_cfg)
         save_cfg(self.cfg)
         lo = int(self.cfg["min_minutes"]) * 60
@@ -2576,8 +2734,8 @@ class AskMe:
             self.next_due = random.randint(lo, hi)
             self.since_last = 0
         if mode_changed:
-            # 换了收起形态就当场收一次，不然用户改完设置看不到任何变化
-            self.root.after(60, self.apply_collapse_mode)
+            # 换了常驻形态就当场摆一次，不然用户改完设置看不到任何变化
+            self.root.after(60, self.apply_home_mode)
 
     def quit(self):
         self._closing = True
@@ -3268,6 +3426,33 @@ class SettingsWindow:
         self.sysvars[label] = (var, setter)
         Switch(row, var, bg=BG).pack(side="right", padx=(12, 0), pady=(2, 0))
 
+    def _choice(self, parent, key, label, desc="", options=()):
+        """单选。options 是 [(值, 按钮上的字), ...]。
+
+        用两个并排的按钮而不是下拉框：选项只有两三个的时候，下拉框要"点开、
+        看一眼、再点一下"，多两步；并排按钮一眼就能看到有哪几个选择。
+        """
+        row = self._row(parent, label, desc)
+        var = tk.StringVar(value=str(self.app.cfg.get(key, DEFAULTS[key])))
+        self.vars[key] = ("text", var)
+        holder = tk.Frame(row, bg=BG)
+        holder.pack(side="right", padx=(12, 0))
+        btns = {}
+
+        def pick(v):
+            var.set(v)
+            for k, b in btns.items():
+                b.config(bg=ACCENT if k == v else SOFT,
+                         fg=BG if k == v else MUTED)
+
+        for v, text in options:
+            b = tk.Button(holder, text=text, command=lambda v=v: pick(v),
+                          font=(FONT, 9), relief="flat", bd=0, padx=10, pady=3,
+                          cursor="hand2")
+            b.pack(side="left", padx=(0, 4))
+            btns[v] = b
+        pick(var.get())
+
     def _num(self, parent, key, label, desc="", width=8, suffix="", is_float=False):
         row = self._row(parent, label, desc)
         var = tk.StringVar(value=str(self.app.cfg.get(key, DEFAULTS[key])))
@@ -3314,13 +3499,15 @@ class SettingsWindow:
         self._bool(p, "enabled", "开启提醒", "总开关。等于「是否弹窗」——弹窗是这个工具唯一的入口。")
 
         self._section(p, "启动与常驻",
-                      "程序没有主窗口，界面上只有右下角那条。收起来之后它照样计时。")
-        self._bool(p, "collapse_tray", "收起时用系统托盘图标",
-                   "开：收进任务栏托盘，桌面上什么都不留。左键点一下图标把它叫回来，"
-                   "右键出菜单。Win11 会把新图标先塞进「^」里，程序会自动把它提到"
-                   "任务栏；万一没提上来，去「设置 → 个性化 → 任务栏 → 其他系统"
-                   "托盘图标」里打开一次就行。"
-                   "关：缩成右下角一个小方块，永远看得见。")
+                      "程序没有主窗口。选一个你希望它一直待着的地方，两种形态都照样计时。")
+        self._choice(p, "home_mode", "常驻形态",
+                     "悬浮条：右下角一条 214×40 的小条，随时看得见状态，点一下开记录，"
+                     "右键出菜单。"
+                     "托盘图标：桌面上什么都不留，只占任务栏托盘一个格子，左键开记录、"
+                     "右键出菜单。Win11 会把新图标先塞进「^」里，程序会自动把它提到"
+                     "任务栏；万一没提上来，去「设置 → 个性化 → 任务栏 → 其他系统"
+                     "托盘图标」里打开一次就行。",
+                     [("pill", "悬浮条"), ("tray", "托盘图标")])
         self._sys_bool(p, "开机自启动",
                        "登录 Windows 后自己开始计时。否则每天开机都得记得手动点一下。",
                        lambda: bool(autostart_get()), autostart_set)

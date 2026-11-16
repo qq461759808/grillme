@@ -70,6 +70,8 @@ public class GrillService extends Service {
     private long lastBufferFlush;
     private long lastStateSave;
     private long lastNotifAt;
+    /** 上次弹窗失败（addView 抛异常）的时刻。失败后别每秒重试，否则一秒一张截图。 */
+    private long askFailAt;
 
     private PowerManager pm;
     private KeyguardManager km;
@@ -79,7 +81,41 @@ public class GrillService extends Service {
         @Override
         public void onReceive(Context context, Intent intent) {
             String a = intent.getAction();
+            android.util.Log.i("grillme", "屏幕事件 " + a
+                    + " since=" + sinceLast + " nextDue=" + nextDue
+                    + " overlay=" + (overlay == null ? "null" : String.valueOf(overlay.isShowing())));
+
+            if (Intent.ACTION_SCREEN_OFF.equals(a)) {
+                // 熄屏/锁屏时系统会把 TYPE_APPLICATION_OVERLAY 的窗口摘掉，但我们的
+                // showing 旗子不会跟着复位。以前这里完全不处理 SCREEN_OFF，于是锁屏
+                // 再解锁后 tickOnce 一直命中「弹窗已经挂着」那条分支，时间涨到 167/60
+                // 也不弹新窗，用户切回 App 的一瞬间才补弹——就是那个 bug。
+                //
+                // 收掉窗口，并把「欠着的那道题」记下来，解锁回来接着问。
+                boolean wasUp = overlay != null && overlay.isShowing();
+                if (overlay != null) {
+                    overlay.dismiss();
+                    overlay = null;
+                }
+                if (wasUp) {
+                    pending = true;
+                }
+                lastTickAt = 0;      // 熄屏这段时间不算账，回来第一拍只认 1 秒
+                ui.removeCallbacks(tick);
+                ui.post(tick);
+                return;
+            }
+
             if (Intent.ACTION_SCREEN_ON.equals(a) || Intent.ACTION_USER_PRESENT.equals(a)) {
+                // 万一 SCREEN_OFF 没收到（部分 OEM 在锁屏界面不派发），这里再兜一次：
+                // 窗口已经不在的残留对象直接扔掉，别让它继续骗 tickOnce。
+                if (overlay != null && !overlay.isShowing()) {
+                    overlay.dismiss();
+                    overlay = null;
+                }
+                if (Intent.ACTION_USER_PRESENT.equals(a)) {
+                    lastTickAt = 0;  // 解锁回来从这一秒重新起算
+                }
                 // 只挪 tick，不要 removeCallbacksAndMessages(null)——那会顺手把
                 // 已经排好的 syncTick 一起清掉，同步从此再也不跑。
                 ui.removeCallbacks(tick);
@@ -345,6 +381,14 @@ public class GrillService extends Service {
             sessionStart = 0;
             longAlerted = false;
             releaseWake();
+            // 锁屏状态下窗口是挂不住的，留着只会变成僵尸对象
+            if (overlay != null) {
+                if (overlay.isShowing()) {
+                    pending = true;   // 题弹到一半被锁屏吞了，回来得重问
+                }
+                overlay.dismiss();
+                overlay = null;
+            }
             return;
         }
 
@@ -355,6 +399,15 @@ public class GrillService extends Service {
         }
         active += dt;
         sinceLast += dt;
+
+        // 每 10 拍打一条状态，出问题时靠它还原现场（release 包也能看 logcat）
+        if (tickCount % 10 == 0) {
+            android.util.Log.i("grillme", "tick dt=" + dt + " active=" + active
+                    + " since=" + sinceLast + "/" + nextDue
+                    + " overlay=" + (overlay == null ? "null" : String.valueOf(overlay.isShowing()))
+                    + " canPopup=" + canPopup() + " app=" + curApp);
+        }
+        tickCount++;
 
         if (cfg.trackApp()) {
             if (sampleTick % 2 == 0) {
@@ -376,6 +429,13 @@ public class GrillService extends Service {
         }
 
         if (pending || sinceLast >= nextDue) {
+            // 弹窗要是刚失败过，先歇 15 秒再来。不然 sinceLast 一直 >= nextDue，
+            // 每一拍都会重新 ask 一次，而 ask 里带截图——一秒一张，手机直接烫。
+            if (askFailAt > 0 && now - askFailAt < 15000) {
+                maybeUpdateNotif(now);
+                saveEvery(now);
+                return;
+            }
             boolean wasPending = pending;
             pending = false;
             ask(wasPending ? "back" : "normal");
@@ -497,9 +557,16 @@ public class GrillService extends Service {
             }
         });
         overlay.show();
-        if (overlay.isShowing()) {
+        boolean up = overlay.isShowing();
+        askFailAt = up ? 0 : System.currentTimeMillis();
+        android.util.Log.i("grillme", "ask kind=" + kind + " 截图="
+                + (pendingShot.isEmpty() ? "无" : "有") + " showing=" + up);
+        if (up) {
             Notifier.alert(this, cfg);
             flushUsage();
+        } else {
+            // 窗口没挂上（权限被撤、系统正在锁屏…），别把这道题当成问过了
+            pending = true;
         }
     }
 
