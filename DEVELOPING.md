@@ -8,10 +8,19 @@
 ## 0. 一句话现状
 
 两端都已完成并发布在 https://github.com/qq461759808/grillme
-（`v1.1.2` 最新，`v1.1.1` / `v1.1.0` / `v1.0.0` 是前三个版本）：
-电脑端是单文件 Python（`grill.py`，约 3400 行）+ PyInstaller 打的 exe；
+（`v1.1.3` 最新，`v1.1.2` / `v1.1.1` / `v1.1.0` / `v1.0.0` 是前四个版本）：
+电脑端是单文件 Python（`grill.py`，约 3500 行）+ PyInstaller 打的 exe；
 安卓端是纯 Java（15 个文件，无 AndroidX、无 Kotlin、无第三方库）。
 四语言词表在 `lang/strings.json`，203 条 × zh/en/ja/ru。
+
+1.1.3 修的是 1.1.2 里"托盘图标点了没反应"：
+
+- 用户报：收进托盘之后，图标在、悬停有提示，但左键/双击/右键全都没反应。
+- 定位到：图标注册、消息循环、展开链路全部健康，**唯独 Shell 不投递点击回调**，
+  根因没查到（详见 §6.18）。
+- 修法：不再只靠 Shell——`NIM_SETVERSION(4)` 拿到图标矩形，
+  主线程每 200ms 自己用 `GetAsyncKeyState` + `GetCursorPos` 判断有没有点它。
+- `tray_debug.log` 改成默认就写，下次出问题不用再靠猜。
 
 1.1.2 只动了电脑端的收起形态：
 
@@ -74,7 +83,7 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 
 ## 3. 电脑端 `grill.py`
 
-单文件约 3400 行，只依赖标准库（**没有第三方包，这是刻意的**，见 §8）。按段落分：
+单文件约 3500 行，只依赖标准库（**没有第三方包，这是刻意的**，见 §8）。按段落分：
 
 | 段落 | 职责 |
 |---|---|
@@ -116,7 +125,7 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 | `usage/*.json` | 按应用累计 |
 | `shots/*.jpg` | 弹窗前的截图 + `thumbs/` 缩略图 |
 | `error.log` | 异常堆栈 |
-| `tray_debug.log` | 只有设了 `GRILL_TRAY_DEBUG=1` 才写：托盘收到的每条消息（§6.17） |
+| `tray_debug.log` | 托盘收到的每条消息 + 图标矩形 + 兜底判定（§6.18），每次启动清空 |
 
 `log.jsonl` 一条的样子：
 
@@ -436,13 +445,16 @@ HKCU\Control Panel\NotifyIconSettings\<按 exe 路径算出来的数字>
   只有打包后的 exe 才动注册表（调试时可以用 `GRILL_PROMOTE_TEST=1` 强行放开）。
 
 **关于 `Shell_NotifyIconGetRect` 返回 `0x80070057 (E_INVALIDARG)`：这是正常的。**
-那个 API 要求图标用 `NOTIFYICON_VERSION_4` 注册，我们用默认的 V0，
-所以查不到矩形不代表图标没显示——别被它误导（我就被误导过一轮）。
+那个 API 要求图标用 `NOTIFYICON_VERSION_4` 注册，没设就是 V0，查不到矩形
+不代表图标没显示——别被它误导（我就被误导过一轮）。1.1.3 起 `_add()` 会调
+`NIM_SETVERSION(4)`，于是能查到真实矩形了（本机实测 `(1534,1152)-(1566,1200)`，
+32×48 就是任务栏那一格的点击区）。
 
-**顺便：V0 和 V4 的回调消息不一样。** V4 左键发 `NIN_SELECT` / `NIN_KEYSELECT`
-（`WM_USER + 0` / `WM_USER + 1`），V0 发 `WM_LBUTTONUP`。我们留在 V0（兼容性最好），
-但 `_pump()` 里两种都认，免得哪天有人加了 `NIM_SETVERSION` 就点不动了。
-回调消息本身用 `WM_APP + 1`（`0x8001`），别用 `WM_USER` 段——那里是 Shell 自己的地盘。
+**V0 和 V4 的回调消息不一样。** V4 左键发 `NIN_SELECT` / `NIN_KEYSELECT`
+（`WM_USER + 0` / `WM_USER + 1`）、**右键改成发 `WM_CONTEXTMENU`（0x7B）**，
+V0 才是 `WM_LBUTTONUP` / `WM_RBUTTONUP`。`_pump()` 里两套都认，
+`_run()` 里 `WM_CONTEXTMENU` 也要接，不然换了版本右键就没反应。
+回调消息本身用 `WM_APP + 1`（`0x8001`），别用 `WM_USER` 段——那里是 Shell 的地盘。
 
 **`TaskbarCreated` 必须处理**（`RegisterWindowMessageW("TaskbarCreated")`），
 否则资源管理器重启一次，图标就永久消失。
@@ -454,10 +466,6 @@ HKCU\Control Panel\NotifyIconSettings\<按 exe 路径算出来的数字>
 不走 `--add-data`，少一条 onefile 下 `sys._MEIPASS` 的出错路径。
 注意 `tk.PhotoImage` 必须留引用（`self._img`），否则被 GC 掉图就没了。
 
-**调试开关**：设 `GRILL_TRAY_DEBUG=1` 会把托盘收到的每条消息写进
-`%APPDATA%\Grill\tray_debug.log`。查"点了没反应"先看这个文件——
-有消息说明是界面的事，没消息说明消息根本没到，别在界面上瞎找。
-
 **这个环境没法验证真实点击**：这台机器的沙箱会吞掉合成的鼠标按键
 （`mouse_event` 和 `SendInput` 都返回成功，但系统不处理，连"点一下关掉溢出面板"
 都做不到；`SetCursorPos` 移动光标却是好的）。所以托盘点击是靠
@@ -465,7 +473,42 @@ HKCU\Control Panel\NotifyIconSettings\<按 exe 路径算出来的数字>
 说明消息循环和展开链路都对，剩下的只有 Explorer 投递这一环，那是 API 契约。
 兜底路径（再双击一次 exe → `poke_existing()` → 展开）可以真机验证，走的就是这条。
 
-### 6.18 安卓："每跑一次 +1"的计时，一卡就永久落后
+### 6.18 托盘图标点不动：Shell 一条回调都不发
+
+**症状**（1.1.2 用户报的）：小条收进托盘之后，图标在那儿、鼠标停上去还弹提示文字，
+但左键、双击、右键全都没反应，跟没接电一样。
+
+**已确认的部分**：`NIM_ADD` 返回 TRUE、`NIM_SETVERSION(4)` 返回 TRUE、
+`Shell_NotifyIconGetRect` 能查到正确的矩形、悬停提示是程序自己设的那句、
+往窗口 `PostMessage` 一个点击消息能正常展开小条。
+也就是说：图标注册健康、消息循环活着、展开链路没问题，**唯独 Shell 不往我们这儿投递**。
+
+**根因没定位到**。查过但没排除的：V0/V4 语义、回调消息值（`WM_APP` 段）、
+`uID`、窗口是否 top-level、`IsPromoted` 注册表提升、UIPI 完整性级别。
+这台机器的沙箱会吞掉合成的鼠标按键（`mouse_event` 和 `SendInput` 都返回成功但系统
+不处理，连 `GetAsyncKeyState` 都读不到），所以没法自己复现、只能靠用户反馈。
+
+**结论：不要只靠 Shell 投递。** 1.1.3 加了 `Tray._watch()`——主线程每 200ms
+自己看一眼，不依赖任何回调：
+
+1. `GetAsyncKeyState(VK_LBUTTON/RBUTTON)` 取**低位**（自上次调用以来按下过）。
+   为什么用低位而不是比对按下/松开状态：一拍 200ms，手快的人按下又松开都在
+   同一拍里完成，比对状态会整个漏掉；低位是累加的，轮询慢也不会漏。
+2. 光标位置在不在图标矩形里，用 `Shell_NotifyIconGetRect` 拿（所以必须 V4）。
+3. 两个都成立就当成"点了图标"，往队列里塞一条，走和真实回调完全相同的路径。
+
+三个坑：
+- **不管图标在不在，每一拍都要调 `GetAsyncKeyState` 把标志位吃掉**，
+  否则展开期间攒下的点击会在刚收起的下一拍被误判成"点了图标"。
+- 图标在「^」面板里、面板没展开时 `GetRect` 会失败，这时兜底无能为力——
+  日志里会记一条"拿不到图标矩形"，用户点开「^」之后就能正常用了。
+- 收到过真实回调时（`_last_evt` 在 0.5 秒内）兜底不插手，免得两套机制打架。
+
+**`tray_debug.log` 改成默认就写**（原来是 `GRILL_TRAY_DEBUG=1` 才写）。
+用户报"点了没反应"的时候手上一点证据都没有，只能靠猜——这个教训比 bug 本身值钱。
+每次启动清空，不会无限长大。
+
+### 6.19 安卓："每跑一次 +1"的计时，一卡就永久落后
 
 **症状**：在 B 站、知乎这类一直出帧的 App 里，倒计时不走字；说好一分钟提醒，
 等十分钟也不弹窗；切回 App 一看，剩余时间只少了几秒。
@@ -493,7 +536,7 @@ VirtualDisplay 一直在合成，SurfaceFlinger 压力大），这一拍就会�
 
 实测（23054RA19C / HyperOS，B 站视频播放中）：`since_last` 30 秒走 30 秒。
 
-### 6.19 安卓：秒数 5 秒才跳一下
+### 6.20 安卓：秒数 5 秒才跳一下
 
 **症状**：首页倒计时带秒，但读数五秒才变一次。
 
@@ -505,7 +548,7 @@ SharedPreferences，而 `saveEvery()` 是**每 5 秒**才落盘一次。界面�
 `secondsLeft()` 优先用它，并按 `uptimeMillis` 的经过时间自己往下减。落盘值只作为
 服务没起来时的兜底。`onDestroy()` 里把 `liveLeft` 置 -1 表示失效。
 
-### 6.20 安卓版本号忘了跟着改
+### 6.21 安卓版本号忘了跟着改
 
 1.1.0 的 APK 装上去，`dumpsys package` 里还是 `versionName=1.0.0`——
 `android/app/build.gradle` 的 `versionCode` / `versionName` 没跟着动。
@@ -572,11 +615,11 @@ cd android && gradle assembleRelease
 5. `git tag`、push、传 release 附件。
 
 ```bash
-git tag -f v1.1.2 && git push <remote> main:main "+refs/tags/v1.1.2:refs/tags/v1.1.2"
+git tag -f v1.1.3 && git push <remote> main:main "+refs/tags/v1.1.3:refs/tags/v1.1.3"
 ```
 
 `dist/` 被 `.gitignore` 排除——二进制只进 release 附件，不进源码树。
-附件命名：`grillme-1.1.2-win64.zip`（exe + 文档）、`grillme-1.1.2.apk`、`grillme-1.1.2.zip`（安卓 + 文档）。
+附件命名：`grillme-1.1.3-win64.zip`（exe + 文档）、`grillme-1.1.3.apk`、`grillme-1.1.3.zip`（安卓 + 文档）。
 **只改电脑端时，安卓那两个附件不用重出**，release 里沿用上一版即可——但要在说明里写清楚。
 
 ---
@@ -651,10 +694,11 @@ SharedPreferences 就先 `assembleDebug` 装一版。
 
 ## 10. 待办与已知缺口
 
-- **托盘图标的"左键点击展开"没在真机上验过**：这台机器的沙箱吞掉合成的鼠标按键
-  （§6.17 最后一段）。已验证的是 `NIM_ADD` 成功、图标被提到任务栏、悬停 tooltip 正常、
-  `PostMessageW` 投递回调后能展开——差的只有 Explorer 投递那一环。第一次装到
-  真机上请先点一下图标确认；点不动的话再双击一次 exe（`wake.flag` 那条兜底是验过的）。
+- **托盘点击的根因还没查到**（§6.18）：1.1.3 用轮询兜底绕过去了，功能可用，
+  但"为什么 Shell 一条回调都不发"仍然不明。如果以后遇到同样症状的托盘程序，
+  这条线索值得继续挖。
+- **兜底轮询在「^」面板收起时无能为力**：拿不到图标矩形就没法判断。此时用户
+  点开「^」再点图标即可（面板一展开矩形就有了）。日志里会留一条记录。
 - **电脑端还没接 `lang/strings.json`**：UI 里约 340 条中文字符串（去重 307）是硬编码的，日/俄没翻。
   安卓已经接了（`Lang.java` 读 `assets/strings.json`）。这是最大的一处不一致。
 - **安卓用的是 debug 签名**（`build.gradle` 里 `signingConfig signingConfigs.debug`），
@@ -690,6 +734,9 @@ SharedPreferences 就先 `assembleDebug` 装一版。
   试过蓝色圆环，用户说"这个小眼睛不如小方块"，见 §6.17。
 - **托盘的窗口过程不能改回 Python 回调**——会在点第一下的时候把进程打崩（§6.17）。
   看着"这样写更直观"，实际是个必崩的写法。
+- **托盘点击不能只靠 Shell 投递**——用户的机器上 Shell 一条回调都不发，
+  而图标注册一切正常（§6.18）。`Tray._watch()` 那条轮询看着像补丁，其实是必需的：
+  少了它，在那种环境下整个托盘形态就是块死图标。
 - **单实例锁不能去掉，第二个实例的消息框也不能去掉**——见 §6.14。两者是一套的：
   锁负责不让它跑起来，框负责让用户知道为什么没跑起来。而且第二个实例写的
   `wake.flag` 是托盘的兜底出口：万一托盘图标点不动，再双击一次 exe 就能把小条叫出来。

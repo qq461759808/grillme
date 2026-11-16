@@ -280,9 +280,12 @@ def log_error(exc_text):
 
 
 def tray_dbg(msg):
-    """托盘相关的调试日志。只有设了 GRILL_TRAY_DEBUG 才写，正式版等于空转。"""
-    if not os.environ.get("GRILL_TRAY_DEBUG"):
-        return
+    """托盘相关的调试日志。
+
+    以前要用 GRILL_TRAY_DEBUG=1 才写，结果用户报"点了没反应"时手上什么证据都没有，
+    只能靠猜。现在默认就写：托盘消息本来就稀疏（一次点击一条），开销可以忽略，
+    出问题时直接看这个文件。文件在每次启动时清空，不会无限长大。
+    """
     try:
         stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         with open(os.path.join(DATA_DIR, "tray_debug.log"), "a",
@@ -1530,6 +1533,8 @@ def build_pill_menu(app, parent, collapsed):
 
 WM_TRAY = 0x8001            # WM_APP + 1，托盘回调消息
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
+NIM_SETVERSION = 4
+NOTIFYICON_VERSION_4 = 4    # 见 _add() 里的说明：不设它拿不到图标矩形
 NIF_MESSAGE, NIF_ICON, NIF_TIP = 0x01, 0x02, 0x04
 IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x10
@@ -1537,10 +1542,14 @@ IDI_APPLICATION = 32512
 WM_LBUTTONUP = 0x0202
 WM_LBUTTONDBLCLK = 0x0203
 WM_RBUTTONUP = 0x0205
+WM_CONTEXTMENU = 0x007B
 WM_CLOSE = 0x0010
 # 新版 Shell 左键不再发 WM_LBUTTONUP，改发这两个（都是 WM_USER 段）
 NIN_SELECT = 0x0400
 NIN_KEYSELECT = 0x0401
+# 兜底检测用：鼠标按键的全局状态
+VK_LBUTTON = 0x01
+VK_RBUTTON = 0x02
 
 
 class GUID(ctypes.Structure):
@@ -1569,6 +1578,14 @@ class NOTIFYICONDATAW(ctypes.Structure):
         ("guidItem", GUID),
         ("hBalloonIcon", wintypes.HICON),
     ]
+
+
+class NOTIFYICONIDENTIFIER(ctypes.Structure):
+    """查图标矩形用的句柄：hWnd + uID 就够，guidItem 全零。"""
+    _fields_ = [("cbSize", wintypes.DWORD),
+                ("hWnd", wintypes.HWND),
+                ("uID", wintypes.UINT),
+                ("guidItem", GUID)]
 
 
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
@@ -1683,7 +1700,13 @@ class Tray:
         self._ready = threading.Event()
         self._thread = None
         self._last_tip = tip or "质问我"
+        # 兜底检测用：最近一次收到托盘消息的时间
+        self._last_evt = 0.0
         try:
+            try:
+                os.remove(os.path.join(DATA_DIR, "tray_debug.log"))
+            except OSError:
+                pass
             self._thread = threading.Thread(target=self._run, name="grill-tray",
                                             daemon=True)
             self._thread.start()
@@ -1695,6 +1718,7 @@ class Tray:
             if self.ok:
                 self.remove()
             self.app.root.after(150, self._pump)
+            self.app.root.after(300, self._watch)
         except Exception:
             log_error(traceback.format_exc())
             self.ok = False
@@ -1765,7 +1789,12 @@ class Tray:
                 tray_dbg(f"收到消息 0x{msg.message:X} hwnd=0x{(msg.hwnd or 0):X} "
                          f"wParam=0x{msg.wParam:X} lParam=0x{msg.lParam:X}")
                 if msg.message == WM_TRAY:
+                    self._last_evt = time.monotonic()
                     self._q.put(("click", msg.lParam & 0xFFFF))
+                elif msg.message == WM_CONTEXTMENU:
+                    # V4 语义下右键不再发 WM_RBUTTONUP，改成这个
+                    self._last_evt = time.monotonic()
+                    self._q.put(("menu", 0))
                 elif msg.message == WM_CLOSE:
                     break
                 elif self._taskbar_created and msg.message == self._taskbar_created:
@@ -1791,6 +1820,8 @@ class Tray:
                             pill.expand()
                     elif ev == WM_RBUTTONUP:
                         self._menu()
+                elif kind == "menu":
+                    self._menu()
                 elif kind == "taskbar":
                     self._added = False
                     self._add(self._last_tip)
@@ -1801,6 +1832,77 @@ class Tray:
         if not self._stop:
             try:
                 self.app.root.after(150, self._pump)
+            except Exception:
+                pass
+
+    # ---- 兜底：Shell 不投递点击时，自己盯着鼠标
+
+    def _icon_rect(self):
+        """图标在屏幕上的矩形 (left, top, right, bottom)，拿不到返回 None。
+
+        只有 V4 注册才有效（见 _add）。图标在「^」面板里没展开时也会拿不到。
+        """
+        if not self._added or not self.hwnd:
+            return None
+        try:
+            sh = ctypes.WinDLL("shell32", use_last_error=True)
+            sh.Shell_NotifyIconGetRect.argtypes = [
+                ctypes.POINTER(NOTIFYICONIDENTIFIER), ctypes.POINTER(wintypes.RECT)]
+            sh.Shell_NotifyIconGetRect.restype = ctypes.c_long
+            ni = NOTIFYICONIDENTIFIER()
+            ni.cbSize = ctypes.sizeof(NOTIFYICONIDENTIFIER)
+            ni.hWnd = self.hwnd
+            ni.uID = 1
+            r = wintypes.RECT()
+            hr = sh.Shell_NotifyIconGetRect(ctypes.byref(ni), ctypes.byref(r))
+            if hr != 0:
+                return None
+            return (r.left, r.top, r.right, r.bottom)
+        except Exception:
+            return None
+
+    def _watch(self):
+        """万一 Shell 一条回调都不发，点击就永远不会生效。
+
+        所以主线程自己每 200ms 看一眼：左键/右键是不是"刚按下过"、光标是不是
+        正好落在图标矩形里。是的话就当成"点了图标"。
+
+        用 `GetAsyncKeyState` 的**低位**（自上次调用以来按下过）而不是比对
+        按下/松开状态：一拍 200ms，手快一点的人按下又松开都在这一拍里完成，
+        比对状态会整个漏掉。反过来说，正因为靠这个标志位，慢一点轮询也不会
+        漏——所以这里能省点电。
+
+        收到过真实回调时（`_last_evt` 在 0.5 秒内）就不插手，免得两套机制
+        互相打架——虽然 `expand()` 本身是幂等的。
+        """
+        try:
+            u = ctypes.WinDLL("user32", use_last_error=True)
+            u.GetAsyncKeyState.restype = ctypes.c_short
+            u.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+            # 不管图标在不在，都要调一次把"按下过"的标志位吃掉；
+            # 否则展开期间攒下的点击会在刚收起的下一拍被误判成"点了图标"。
+            lp = u.GetAsyncKeyState(VK_LBUTTON) & 0x0001
+            rp = u.GetAsyncKeyState(VK_RBUTTON) & 0x0001
+            if (lp or rp) and self._added and not self._stop:
+                if time.monotonic() - self._last_evt > 0.5:
+                    rect = self._icon_rect()
+                    if not rect:
+                        tray_dbg("兜底：点了鼠标但拿不到图标矩形，判断不了")
+                    else:
+                        p = wintypes.POINT()
+                        u.GetCursorPos(ctypes.byref(p))
+                        if rect[0] <= p.x < rect[2] and rect[1] <= p.y < rect[3]:
+                            if lp:
+                                tray_dbg("兜底：光标在图标矩形里点了一下 → 展开小条")
+                                self._q.put(("click", WM_LBUTTONUP))
+                            else:
+                                tray_dbg("兜底：光标在图标矩形里右键 → 出菜单")
+                                self._q.put(("menu", 0))
+        except Exception:
+            pass
+        if not self._stop:
+            try:
+                self.app.root.after(200, self._watch)
             except Exception:
                 pass
 
@@ -1827,6 +1929,15 @@ class Tray:
             self._nid = nid
             self._added = ok
             tray_dbg(f"NIM_ADD ok={ok} err={ctypes.get_last_error()} tip={self._last_tip!r}")
+            if ok:
+                # 声明用 V4 语义。两个作用：
+                # 1. 左键回调变成 NIN_SELECT，右键变成 WM_CONTEXTMENU——这是 Win11
+                #    上壳子真正推荐的路径；
+                # 2. **只有 V4 才能调 Shell_NotifyIconGetRect**，而拿到图标矩形是
+                #    _watch() 那条兜底检测的前提。不设它 GetRect 一律返回 E_INVALIDARG。
+                nid.uVersion = NOTIFYICON_VERSION_4
+                v = bool(u.Shell_NotifyIconW(NIM_SETVERSION, ctypes.byref(nid)))
+                tray_dbg(f"NIM_SETVERSION(4) ok={v}")
             return ok
         except Exception:
             log_error(traceback.format_exc())
@@ -2111,6 +2222,9 @@ class AskMe:
         if self.tray and self.tray.ok:
             self.tray._add(tip or "质问我")
             self.tray._promote()
+            # 过两秒把图标矩形记一笔：托盘点不动的时候，先看这个
+            self.root.after(2000, lambda: tray_dbg(
+                f"图标矩形 = {self.tray._icon_rect()}"))
 
     def tray_hide(self):
         if self.tray:

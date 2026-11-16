@@ -87,7 +87,7 @@
 
 ### 方式一：直接下 exe（不用装 Python）
 
-`grillme-1.1.2-win64.zip` 解压到任意目录，双击 `GrillMe.exe`。约 13 MB，Windows 10 / 11 64 位通用。
+`grillme-1.1.3-win64.zip` 解压到任意目录，双击 `GrillMe.exe`。约 13 MB，Windows 10 / 11 64 位通用。
 
 **只有 64 位版本**，没有 32 位。原因：Windows 11 只有 64 位，Windows 10 的 32 位版本已经在 2025 年 10 月停止支持；而且这个程序要靠 `ctypes` 调 `user32` / `gdi32`，64 位下句柄和指针都不用截断，少一类说不清的坑。如果你的机器确实是 32 位系统，按下面的方式二跑源码——`python grill.py` 在 32 位 Python 上一样能跑。
 
