@@ -80,7 +80,9 @@ public class GrillService extends Service {
         public void onReceive(Context context, Intent intent) {
             String a = intent.getAction();
             if (Intent.ACTION_SCREEN_ON.equals(a) || Intent.ACTION_USER_PRESENT.equals(a)) {
-                ui.removeCallbacksAndMessages(null);
+                // 只挪 tick，不要 removeCallbacksAndMessages(null)——那会顺手把
+                // 已经排好的 syncTick 一起清掉，同步从此再也不跑。
+                ui.removeCallbacks(tick);
                 ui.post(tick);
             }
         }
@@ -89,13 +91,58 @@ public class GrillService extends Service {
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
+            // 用真实经过的时间记账，而不是"每跑一次 +1"。
+            //
+            // 原来写的是 sinceLast++：Handler.postDelayed 只是"约一秒钟后再叫我"，
+            // 主线程一旦被别的事情占住（B 站/知乎那种一直出帧的 App，SurfaceFlinger
+            // 合成压力大），这一拍就会晚到甚至丢掉。丢一拍，账上就永久少一秒——
+            // 丢一百拍，用户等十分钟，读数只掉几秒，弹窗永远不来。
+            //
+            // 用 uptimeMillis 而不是 elapsedRealtime：后者把深度睡眠也算进去，
+            // 锁屏睡一夜醒来会一口气补上八小时，一解锁就弹窗。uptimeMillis 只算
+            // 设备醒着的时间，正好对应"你确实在用"。
+            long t0 = android.os.SystemClock.uptimeMillis();
+            int dt = lastTickAt == 0 ? 1 : (int) ((t0 - lastTickAt) / 1000);
+            if (dt < 1) {
+                dt = 1;
+            }
+            if (dt > MAX_CREDIT) {
+                dt = MAX_CREDIT;   // 单次最多认两分钟，防睡醒后一口气补满
+            }
+            lastTickAt = t0;
             try {
-                tickOnce();
+                tickOnce(dt);
             } catch (Exception ignored) {
+            }
+            markLive();
+            long cost = android.os.SystemClock.uptimeMillis() - t0;
+            if (dt > 3 || cost > 300) {
+                android.util.Log.w("grillme", "tick 迟到：补了 " + dt + "s，耗时 "
+                        + cost + "ms，前台 " + curApp);
             }
             ui.postDelayed(this, 1000);
         }
     };
+
+    private long lastTickAt;
+
+    /** 单次 tick 最多认多少秒。见 tick 里的注释。 */
+    private static final int MAX_CREDIT = 120;
+
+    /**
+     * 给界面用的"还差多少秒"。
+     *
+     * 首页每秒刷一次，但它读的是 SharedPreferences，而落盘是每 5 秒一次——所以
+     * 原来秒数五秒才跳一下。这里留一个内存里的活读数，界面自己按经过时间往下减，
+     * 就是真正的一秒一跳。
+     */
+    private static volatile int liveLeft = -1;
+    private static volatile long liveAt;
+
+    private void markLive() {
+        liveLeft = Math.max(0, nextDue - sinceLast);
+        liveAt = android.os.SystemClock.uptimeMillis();
+    }
 
     @Override
     public void onCreate() {
@@ -203,6 +250,7 @@ public class GrillService extends Service {
     @Override
     public void onDestroy() {
         ui.removeCallbacksAndMessages(null);
+        liveLeft = -1;          // 服务没了，界面回落到读落盘值
         try {
             unregisterReceiver(screenRx);
         } catch (Exception ignored) {
@@ -248,7 +296,7 @@ public class GrillService extends Service {
         }
     }
 
-    private void tickOnce() {
+    private void tickOnce(int dt) {
         syncShotPipeline();
         long now = System.currentTimeMillis();
         String today = Store.today();
@@ -289,7 +337,7 @@ public class GrillService extends Service {
         boolean locked = km != null && km.isKeyguardLocked();
 
         if (!screenOn) {
-            handleOffScreen(now);
+            handleOffScreen(now, dt);
             return;
         }
         offScreenSince = 0;
@@ -305,23 +353,25 @@ public class GrillService extends Service {
             sessionStart = now;
             longAlerted = false;
         }
-        active++;
-        sinceLast++;
+        active += dt;
+        sinceLast += dt;
 
         if (cfg.trackApp()) {
             if (sampleTick % 2 == 0) {
                 sampleForeground(now);
             }
             sampleTick++;
-            addUsage(curLabel, 1);
+            addUsage(curLabel, dt);
         }
 
         if (overlay != null && overlay.isShowing()) {
             maybeUpdateNotif(now);
+            saveEvery(now);     // 弹窗挂着的时候计时还在走，账也得照样落盘
             return;
         }
         if (!canPopup()) {
             maybeUpdateNotif(now);
+            saveEvery(now);
             return;
         }
 
@@ -338,7 +388,7 @@ public class GrillService extends Service {
         saveEvery(now);
     }
 
-    private void handleOffScreen(long now) {
+    private void handleOffScreen(long now, int dt) {
         if (!cfg.watchOffScreen()) {
             offScreenSince = 0;
             sessionStart = 0;
@@ -358,8 +408,8 @@ public class GrillService extends Service {
         }
         // 宽限期内仍然算在用：短暂黑屏不算你走了
         holdWake();
-        active++;
-        sinceLast++;
+        active += dt;
+        sinceLast += dt;
         if (sinceLast >= nextDue) {
             pending = true;
             if (cfg.alertWhenOffScreen() && now - lastRingAt > 60000) {
@@ -709,6 +759,12 @@ public class GrillService extends Service {
     }
 
     public static int secondsLeft(Context c) {
+        // 服务活着就用内存里的活读数，界面自己按经过时间往下减——这样才是一秒一跳。
+        int live = liveLeft;
+        long age = android.os.SystemClock.uptimeMillis() - liveAt;
+        if (live >= 0 && age >= 0 && age < 5000) {
+            return Math.max(0, live - (int) (age / 1000));
+        }
         Cfg cfg = Cfg.get(c);
         int next = cfg.i(Cfg.NEXT_DUE, cfg.firstMinutes() * 60);
         int since = cfg.i(Cfg.SINCE_LAST, 0);

@@ -1258,13 +1258,24 @@ class Pill:
     """
     右下角那条状态小条。
 
-    能收成一个小圆点——不是隐藏。隐藏起来用户就找不到了，转头又双击一次 exe，
-    于是两个实例并排跑（这正是"两条时间线"的老毛病）。缩成圆点，位置还在
-    右下角，一眼能看见，点一下就展开。
+    能收成一个**小图标**——不是隐藏，也不是一个空白小方块。隐藏起来用户就找不
+    到了，转头又双击一次 exe，于是两个实例并排跑（这正是"两条时间线"的老毛病）。
+
+    收起后的样子跟任务栏/手机桌面上的那个图标同源：蓝底、白圈、中心点，中心点
+    的颜色就是当前状态（绿=正常、黄=快到点、红=正在被问）。位置还在右下角，
+    一眼能看见，点一下就展开。
+
+    为什么不用系统托盘：Win11 把新注册的托盘图标一律塞进「^」溢出面板，默认不
+    显示。Shell_NotifyIconW 返回成功、GetRect 也能查到矩形，但用户在任务栏上
+    什么也看不到，还得自己去「任务栏设置 → 其他系统托盘图标」里手动打开——比
+    一个永远看得见的小图标差远了。
     """
 
     W, H = 214, 40
-    MINI = 40
+    MINI = 32
+    # 透明色键：选一个绝不会出现在界面上的颜色，收起时让方形窗口的背景整体透明，
+    # 只剩那个圆形的图标浮在桌面上，看着才像"图标"而不是"一个白框"。
+    KEY = "#FF00FE"
 
     def __init__(self, app):
         self.app = app
@@ -1285,6 +1296,7 @@ class Pill:
 
         outer = tk.Frame(w, bg=BG)
         outer.pack(fill="both", expand=True, padx=1, pady=1)
+        self.outer = outer
 
         self.dot = tk.Label(outer, text="●", fg=OK, bg=BG, font=(FONT, 9))
         self.dot.pack(side="left", padx=(12, 0))
@@ -1294,7 +1306,17 @@ class Pill:
         )
         self.lbl.pack(side="left", padx=(7, 0), fill="x", expand=True)
 
-        self.mini = tk.Label(outer, text="●", fg=OK, bg=BG, font=(FONT, 15))
+        # 收起后要显示的那个小图标。用 Canvas 画而不是贴图片：不依赖任何资源文件，
+        # PyInstaller 打包进 exe 也不会丢，换缩放比例也不用重做素材。
+        n = self.MINI
+        c = tk.Canvas(w, width=n, height=n, bg=self.KEY,
+                      highlightthickness=0, bd=0)
+        self.icon = c
+        self.mini_body = c.create_oval(0.5, 0.5, n - 0.5, n - 0.5,
+                                       fill=ACCENT, outline=BG, width=1)
+        c.create_oval(6, 6, n - 6, n - 6, outline=BG, width=2)
+        self.mini_dot = c.create_oval(n / 2 - 3, n / 2 - 3, n / 2 + 3, n / 2 + 3,
+                                      fill=OK, outline="")
 
         self._drag = None
         self._moved = False
@@ -1315,18 +1337,31 @@ class Pill:
         if self.collapsed:
             return
         self.collapsed = True
-        self.dot.pack_forget()
-        self.lbl.pack_forget()
-        self.mini.pack(expand=True)
+        self.outer.pack_forget()
+        try:
+            # 让窗口背景透明，只剩圆形的图标本体。万一这台机器不支持
+            # -transparentcolor，背景也只是变成一块纯色，不影响使用。
+            self.win.configure(bg=self.KEY)
+            self.win.attributes("-transparentcolor", self.KEY)
+        except Exception:
+            pass
+        self.icon.pack()
         self._apply()
 
     def expand(self):
         if not self.collapsed:
             return
         self.collapsed = False
-        self.mini.pack_forget()
-        self.dot.pack(side="left", padx=(12, 0))
-        self.lbl.pack(side="left", padx=(7, 0), fill="x", expand=True)
+        self.icon.pack_forget()
+        try:
+            self.win.attributes("-transparentcolor", "")
+        except Exception:
+            pass
+        try:
+            self.win.configure(bg=EDGE)
+        except Exception:
+            pass
+        self.outer.pack(fill="both", expand=True, padx=1, pady=1)
         self._apply()
 
     def toggle(self):
@@ -1342,9 +1377,18 @@ class Pill:
                 if not self.win.winfo_exists():
                     return
                 if i >= times * 2:
-                    self.win.configure(bg=EDGE)
+                    if self.collapsed:
+                        self.icon.itemconfig(self.mini_body, fill=ACCENT)
+                    else:
+                        self.win.configure(bg=EDGE)
                     return
-                self.win.configure(bg=ACCENT if i % 2 == 0 else EDGE)
+                hot = (i % 2 == 0)
+                if self.collapsed:
+                    # 收起时没有边框可闪，就闪图标本体
+                    self.icon.itemconfig(self.mini_body,
+                                         fill=ACCENT_DARK if hot else ACCENT)
+                else:
+                    self.win.configure(bg=ACCENT if hot else EDGE)
                 self.win.after(180, lambda: step(i + 1))
             except Exception:
                 pass
@@ -1388,7 +1432,7 @@ class Pill:
         m.add_command(label="今天不再提醒", command=lambda: self.app.pause_until_tomorrow())
         m.add_command(label="立刻恢复", command=lambda: self.app.pause(0))
         m.add_separator()
-        m.add_command(label="展开" if self.collapsed else "收成小圆点", command=self.toggle)
+        m.add_command(label="展开" if self.collapsed else "收成小图标", command=self.toggle)
         m.add_command(label="设置", command=self.app.open_settings)
         m.add_command(label="退出", command=self.app.quit)
         try:
@@ -1402,7 +1446,8 @@ class Pill:
                 return
             self.lbl.config(text=text)
             self.dot.config(fg=color)
-            self.mini.config(fg=color)
+            # 收起后没有文字，状态全靠中心点那个颜色表达
+            self.icon.itemconfig(self.mini_dot, fill=color)
         except Exception:
             pass
 
@@ -2997,8 +3042,23 @@ def main():
 
     if not acquire_single_instance():
         # 已经有实例在跑。第二个实例绝对不能开始计时——两套计时同时写
-        # state.json，就是"两条时间线"的来源。叫它把悬浮条展开，让人看见。
-        poke_existing()
+        # state.json，就是"两条时间线"的来源。
+        woke = poke_existing()
+        if woke:
+            body = ("质问我已经在运行了。\n\n"
+                    "它就在屏幕右下角，刚才已经把它点亮了一下——"
+                    "没看见的话，看右下角那条小条（收起来时是个小图标）。\n\n"
+                    "这次不会再开第二个，所以不会出现两套时间线。")
+        else:
+            body = ("质问我已经在运行了。\n\n"
+                    "这次不会再开第二个，所以不会出现两套时间线。")
+        # MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND
+        # 不加 TOPMOST 的话，框会被前台窗口压在下面，用户以为"没反应"。
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                None, body, "质问我 · 已经在运行", 0x40 | 0x40000 | 0x10000)
+        except Exception:
+            pass
         return
 
     app = AskMe()

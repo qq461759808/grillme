@@ -127,27 +127,34 @@ public final class Shots {
             width = Math.min(sw, target);
             int height = Math.max(1, (int) ((long) sh * width / sw));
 
-            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
+            // 3 帧而不是 2 帧：我们常驻持有最新一帧（kept），只留 1 个空位的话，
+            // 只要监听线程稍微晚一拍，BufferQueue 就没有可用的 buffer，投屏的生产端
+            // （SurfaceFlinger 那条合成线程）会被反压卡住——表现出来就是整机卡顿，
+            // 连带我们自己的 Handler 也跟着停。多留一个缓冲，给系统一个喘息位。
+            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3);
             reader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
                 @Override
                 public void onImageAvailable(ImageReader r) {
-                    Image img;
+                    Image img = null;
                     try {
                         img = r.acquireLatestImage();
-                    } catch (Exception e) {
-                        return;
+                    } catch (Exception ignored) {
                     }
                     if (img == null) {
                         return;
                     }
+                    // 锁只包住"换个引用"这一步。以前整段 grab() 都是 synchronized，
+                    // 主线程在转 Bitmap 的时候监听线程一直等锁，帧就越堆越多。
+                    Image old;
                     synchronized (Shots.this) {
-                        if (kept != null) {
-                            try {
-                                kept.close();
-                            } catch (Exception ignored) {
-                            }
-                        }
+                        old = kept;
                         kept = img;
+                    }
+                    if (old != null) {
+                        try {
+                            old.close();
+                        } catch (Exception ignored) {
+                        }
                     }
                 }
             }, handler);
@@ -168,12 +175,15 @@ public final class Shots {
      * 投屏只在画面变化时出帧：你要是盯着静态页面看十分钟，队列里一个帧都没有。
      * 所以这里保留"最近成功转换的一帧"，没有新帧时用它兜底，免得弹窗时抓空。
      */
-    public synchronized Bitmap grab() {
-        if (kept == null) {
-            return last == null ? null : last.copy(Bitmap.Config.ARGB_8888, false);
+    public Bitmap grab() {
+        Image img;
+        synchronized (this) {
+            img = kept;
+            kept = null;
+            if (img == null) {
+                return last == null ? null : last.copy(Bitmap.Config.ARGB_8888, false);
+            }
         }
-        Image img = kept;
-        kept = null;
         try {
             Image.Plane plane = img.getPlanes()[0];
             ByteBuffer buf = plane.getBuffer();
@@ -190,11 +200,13 @@ public final class Shots {
                 raw.recycle();
                 raw = cut;
             }
-            if (last != null && last != raw) {
-                last.recycle();
+            synchronized (this) {
+                if (last != null && last != raw) {
+                    last.recycle();
+                }
+                last = raw;
+                return raw.copy(Bitmap.Config.ARGB_8888, false);
             }
-            last = raw;
-            return last.copy(Bitmap.Config.ARGB_8888, false);
         } catch (Exception e) {
             return null;
         } finally {

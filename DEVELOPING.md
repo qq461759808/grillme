@@ -7,7 +7,8 @@
 
 ## 0. 一句话现状
 
-两端都已完成并发布在 https://github.com/qq461759808/grillme （`v1.1.0`，`v1.0.0` 是首个版本）：
+两端都已完成并发布在 https://github.com/qq461759808/grillme
+（`v1.1.1` 最新，`v1.1.0` / `v1.0.0` 是前两个版本）：
 电脑端是单文件 Python（`grill.py`，约 3000 行）+ PyInstaller 打的 exe；
 安卓端是纯 Java（15 个文件，无 AndroidX、无 Kotlin、无第三方库）。
 四语言词表在 `lang/strings.json`，203 条 × zh/en/ja/ru。
@@ -17,8 +18,15 @@
 - **单实例锁**——1.0.0 没有，双击两次 exe 就会出现两个进程各跑一套计时，
   也就是用户报的「两条时间线在并行」（§6.14）。
 - **计时改成单调时钟增量**，不再「每次 tick 加 1」+「时间戳相减」两套账（§6.15）。
-- **小条能收成右下角一个小圆点**，设置里能关掉「我承认在摸鱼」，
+- **小条能收成右下角一个小图标**，设置里能关掉「我承认在摸鱼」，
   电脑端新增开机自启动。
+
+1.1.1 修的是 1.1.0 交付时的四处"说好的没做到"：
+
+- 小条收起后不再是"白框里一个点"，改成画出来的应用图标（§6.17）。
+- 第二个实例重新弹出「已经在运行」的提示框（§6.14）。
+- 安卓在 B 站/知乎里计时停滞、不弹窗——`sinceLast++` 改成真实时间增量（§6.18）。
+- 安卓首页秒数 5 秒才跳一下（§6.19）。
 
 ---
 
@@ -152,6 +160,19 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 
 `AskMe.__init__` 里 `self.root.withdraw()` 把主窗口藏起来了，界面上只有右下角那条药丸。
 所以**用"有没有主窗口"来判断程序是否启动会误判**（`MainWindowHandle` 是 0 是正常的）。
+
+药丸有两种形态，切换在 `collapse()` / `expand()`：
+
+| 形态 | 尺寸 | 组成 |
+|---|---|---|
+| 展开 | 214×40 | `Frame` + 状态点 + 文字，白底细边框 |
+| 收起 | 32×32 | 一个 `Canvas` 画的应用图标，窗口背景用 `-transparentcolor` 抠掉 |
+
+收起态的定位按**右下边缘**算（`self._right` / `self._bottom`），不是左上角——
+不然宽高一变，小条就一边缩一边往左上跳。拖拽时同步更新这两个值。
+
+`flash()` 在两种形态下都要给动静：展开时闪窗口边框，收起时闪图标本体
+（`itemconfig(self.mini_body, fill=...)`），否则用户被拦下来时什么提示都看不到。
 
 ### 5.3 打包后才有意义的两段代码
 
@@ -304,9 +325,18 @@ GBK 编不出来，`print` 直接抛。
 普通 `ctypes.windll` 拿不到可靠错误码，中间的 ctypes 调用会把 last error 冲掉，
 `CreateMutexW` 明明说"已存在"，`GetLastError()` 却返回 0。
 
-第二个实例**不弹消息框**：无窗口进程里的 MessageBox 会被前台窗口盖住，
-而且会卡住那个进程直到有人点确定。改成写 `wake.flag`，
-第一个实例在每秒的 tick 里发现它就展开小条并闪边框（`Pill.flash()`）。
+第二个实例**必须弹消息框**，而且要 `MB_TOPMOST | MB_SETFOREGROUND`。
+
+第一版我图省事，只写了个 `wake.flag` 让第一个实例闪一下，不弹框。结果是：用户
+双击了两次，屏幕上什么都没发生，他既不知道"已经开了一个"，也不知道程序在哪儿——
+这正是用户反馈的那句"怎么最后也没了"。静默失败比弹框难用得多。
+
+所以现在是两件事一起做：
+1. `MessageBoxW(..., 0x40 | 0x40000 | 0x10000)` 明确告诉用户"已经在运行了"；
+2. 同时写 `wake.flag`，第一个实例在每秒的 tick 里发现它就展开小条并闪边框
+   （`Pill.flash()`）——框上那句"它就在屏幕右下角"得是真的。
+
+不加 `MB_TOPMOST` 的话，框会被前台窗口压在下面，用户照样以为"没反应"。
 
 ### 6.15 `since_last` 和 `session_start` 是两套账
 
@@ -349,11 +379,64 @@ ctypes 默认把参数当 32 位 `int`，64 位下 LPARAM 一超过 2^31 就抛 
 **更要命的是 Win11 的行为**：`Shell_NotifyIconW(NIM_ADD)` 返回成功、
 `Shell_NotifyIconGetRect` 也能查到矩形，但图标**不会**出现在任务栏或 `^` 溢出面板里，
 必须由用户去「设置 → 个性化 → 任务栏 → 其他系统托盘图标」手动打开。
-所以最后没走托盘：改成「小条缩成右下角一个小圆点」（`Pill.collapse()`），
+所以最后没走托盘：改成「小条缩成右下角一个小图标」（`Pill.collapse()`），
 不依赖 Explorer、位置永远在右下角、点了就展开。
+
+**"小图标"不是"缩成一个小圆点"**：中间试过一版，收起后是个 40×40 的白框里放一个
+绿色 `●`，用户的原话是"这个奇怪的样子"。现在用 Canvas 直接画出应用图标本体
+（蓝底 + 白圈 + 中心点，中心点的颜色就是状态色），窗口用
+`-transparentcolor` 把方形背景整体透明掉，屏幕上只剩那个圆——看着才是"图标"。
+用 Canvas 画而不是贴 PNG，是为了不依赖资源文件，PyInstaller 打包也不会丢。
+注意展开时要把 `-transparentcolor` 设回空串，否则小条的白底会跟着变透明。
 
 如果哪天真的要做托盘，`TaskbarCreated` 那条消息必须处理
 （`RegisterWindowMessageW("TaskbarCreated")`），否则资源管理器重启一次图标就永久消失。
+
+### 6.18 安卓："每跑一次 +1"的计时，一卡就永久落后
+
+**症状**：在 B 站、知乎这类一直出帧的 App 里，倒计时不走字；说好一分钟提醒，
+等十分钟也不弹窗；切回 App 一看，剩余时间只少了几秒。
+
+**根因**：`GrillService.tick` 是 `ui.postDelayed(this, 1000)` 自调度，`tickOnce()`
+里写的是 `sinceLast++`——**默认"这一拍恰好隔了一秒"**。只要主线程被占住（投屏的
+VirtualDisplay 一直在合成，SurfaceFlinger 压力大），这一拍就会晚到甚至丢掉。
+丢一拍账上就永久少一秒，丢一百拍用户就等不到弹窗。
+
+顺带还有两处会放大这个问题：
+- `syncShotPipeline()` 里 `nearDue = (nextDue - sinceLast) <= 20`，`sinceLast` 不涨
+  就永远不 `resume()`，抓帧管道永远不接上，弹窗前的截图也永远拿不到；
+- `!canPopup()` / 弹窗挂着这两条分支 `return` 在 `saveEvery()` 之前，落盘值一直是
+  旧的，首页读到的"剩余时间"就更不走了。
+
+**修法**：
+1. `tickOnce(int dt)`，`dt` 由 `SystemClock.uptimeMillis()` 的差值算出来。
+   **必须用 `uptimeMillis` 而不是 `elapsedRealtime`**：后者把深度睡眠也算进去，
+   锁屏睡一夜，一解锁 `dt` 就是八小时，`sinceLast` 一口气补满、立刻弹窗。
+   `uptimeMillis` 只算设备醒着的时间，正好对应"你确实在用"。
+2. `dt` 夹在 `[1, 120]`。单拍最多认两分钟，防止极端情况一口气补满。
+3. 两条提前 `return` 的分支补上 `saveEvery(now)`。
+4. `screenRx` 里原来写 `ui.removeCallbacksAndMessages(null)`，会顺手把已经排好的
+   `syncTick` 一起清掉，同步从此再也不跑。改成 `ui.removeCallbacks(tick)`。
+
+实测（23054RA19C / HyperOS，B 站视频播放中）：`since_last` 30 秒走 30 秒。
+
+### 6.19 安卓：秒数 5 秒才跳一下
+
+**症状**：首页倒计时带秒，但读数五秒才变一次。
+
+**根因**：`MainActivity.update()` 每秒跑一次，但 `GrillService.secondsLeft()` 读的是
+SharedPreferences，而 `saveEvery()` 是**每 5 秒**才落盘一次。界面每秒都在读同一个
+旧值，自然五秒一跳。
+
+**修法**：服务里留一个内存活读数 `liveLeft`（每次 tick 用 `markLive()` 刷新），
+`secondsLeft()` 优先用它，并按 `uptimeMillis` 的经过时间自己往下减。落盘值只作为
+服务没起来时的兜底。`onDestroy()` 里把 `liveLeft` 置 -1 表示失效。
+
+### 6.20 安卓版本号忘了跟着改
+
+1.1.0 的 APK 装上去，`dumpsys package` 里还是 `versionName=1.0.0`——
+`android/app/build.gradle` 的 `versionCode` / `versionName` 没跟着动。
+发版清单里必须包含这一项，否则用户没法判断自己装的是哪一版。
 
 ---
 
@@ -407,12 +490,20 @@ cd android && gradle assembleRelease
 
 ### 7.4 发版
 
+发版前对一遍这张单子（1.1.0 就是漏了第 2 条，APK 装上去还写着 1.0.0）：
+
+1. `README.md` / `RELEASE_NOTES.md` 里的版本号和附件名；
+2. **`android/app/build.gradle` 的 `versionCode` / `versionName`**——最容易漏；
+3. `grill.py` 里如果打版本号也要同步；
+4. 重新 `assembleRelease` 并确认体积没异常；
+5. `git tag`、push、传 release 附件。
+
 ```bash
-git tag -f v1.0.0 && git push <remote> main:main "+refs/tags/v1.0.0:refs/tags/v1.0.0"
+git tag -f v1.1.1 && git push <remote> main:main "+refs/tags/v1.1.1:refs/tags/v1.1.1"
 ```
 
 `dist/` 被 `.gitignore` 排除——二进制只进 release 附件，不进源码树。
-附件命名：`grillme-1.0.0-win64.zip`（exe + 文档）、`grillme-1.0.0.apk`、`grillme-1.0.0.zip`（安卓 + 文档）。
+附件命名：`grillme-1.1.1-win64.zip`（exe + 文档）、`grillme-1.1.1.apk`、`grillme-1.1.1.zip`（安卓 + 文档）。
 
 ---
 
@@ -463,6 +554,25 @@ adb shell dumpsys gfxinfo com.grillme.app        # 看是否空转重绘
 
 在 MSYS/Git Bash 里跑 adb 要加 `export MSYS2_ARG_CONV_EXCL='*'`，否则 `/sdcard/...` 会被转成 Windows 路径。
 
+**验计时有没有真的在走**（不用等，直接读账）：
+
+```bash
+A=$(adb shell run-as com.grillme.app cat shared_prefs/grill.xml | grep since_last | grep -o '[0-9]*')
+sleep 30
+B=$(adb shell run-as com.grillme.app cat shared_prefs/grill.xml | grep since_last | grep -o '[0-9]*')
+echo "$A -> $B（真实 30 秒）"
+```
+
+`run-as` 只在 **debug 包**上有效，release 签名会报 `package not debuggable`——要读
+SharedPreferences 就先 `assembleDebug` 装一版。
+
+**想马上看到弹窗**，不用等 3~20 分钟：force-stop 之后直接改
+`shared_prefs/grill.xml` 里的 `since_last`，推到 `next_due` 前一秒，再启动即可。
+注意要先 `adb push` 到 `/data/local/tmp/`，再 `run-as ... cp` 进去，直接写会因权限失败。
+
+`GrillService` 只在**出问题时**才打日志（单拍补了 >3 秒、或耗时 >300ms），
+平时 `adb logcat -s grillme` 是安静的。这条日志就是给"用户说计时不走"准备的。
+
 ---
 
 ## 10. 待办与已知缺口
@@ -474,13 +584,12 @@ adb shell dumpsys gfxinfo com.grillme.app        # 看是否空转重绘
 - **安卓没有"无输入"判定**（系统不给全局最后输入时间），"屏幕亮着就算在用"。
 - **全屏判定只认主屏**，副屏全屏播放会被判成"离开"。
 - 电脑端 `shots/` 的清理按 `shot_keep_days`，默认 0（不清理），长期会攒大。
-- **1.1.0 的安卓改动只过了编译，没上真机**：`Cfg.SHOW_SLIP` + `GrillOverlay` 隐藏
-  「我承认在摸鱼」+ 设置页那一行。逻辑就三行，但"开关关掉后按钮真的不占位"
-  这件事只有真机看得出来（`LinearLayout` 里 GONE 的 view 不参与 measure，
-  所以 `passBtn` 的 weight 从 1.2 改成 1 是多余的保险，不影响布局）。
-- **安卓 `sinceLast` 还是「每秒 +1」**（`GrillService` 里 `sinceLast++`），
-  和电脑端 §6.15 那个问题同源，只是安卓没有 `sessionStart` 时间戳并行，
-  而且服务 tick 用的是 `Handler` 定时，漂得没那么明显。要彻底对齐得改成增量记账。
+- **截屏授权（MediaProjection）这条路没在真机上完整验过**：`dumpsys media_projection`
+  为 null 时 `Shots.ready()` 是 false，整条抓帧管道根本不建，测计时和弹窗都测不到它。
+  要验得手动在 App 里点「截屏授权 → 整个屏幕 → 开始」。
+- **设置页「显示『我承认在摸鱼』」关掉后的布局没在真机上看过**。弹窗开着（默认值）是对的。
+- **安卓 `sinceLast` 已改成增量记账**（§6.18）。电脑端 §6.15 是同一个病，两边现在
+  都用真实经过时间加账，改计时逻辑时别再写回 `xxx++`。
 
 ---
 
@@ -495,6 +604,8 @@ adb shell dumpsys gfxinfo com.grillme.app        # 看是否空转重绘
 - **不做 AI 分析回答**——要联网、要花钱，违背"离线可用"。
 - **电脑端不引第三方包**——只用标准库，所以截图手写 GDI+、HTTP 手写 WebDAV。
   想引 PIL/requests 之前先想清楚：这会毁掉"解压即用、不装依赖"这个前提。
-- **小条「收起」是缩成小圆点，不是隐藏**——藏起来用户就找不到，
-  转头会再双击一次 exe，然后又变成两个实例（§6.14）。
-- **单实例锁不能去掉**——见 §6.14，去掉就等于把"两条时间线"放回来。
+- **小条「收起」是缩成右下角一个小图标，不是隐藏，也不是缩成一个小圆点**——藏起来
+  用户就找不到，转头会再双击一次 exe，然后又变成两个实例（§6.14）；缩成"白框里一个
+  点"会被当成界面出错。现在是画出来的应用图标本体，见 §6.17。
+- **单实例锁不能去掉，第二个实例的消息框也不能去掉**——见 §6.14。两者是一套的：
+  锁负责不让它跑起来，框负责让用户知道为什么没跑起来。
