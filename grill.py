@@ -21,6 +21,7 @@ import base64
 import ctypes
 import json
 import os
+import queue
 import random
 import shutil
 import sys
@@ -86,6 +87,36 @@ DANGER = "#A32D2D"
 DUP1 = "#B45309"
 DUP2 = "#A32D2D"
 
+# 收起态小方块的底色，跟图标本体的深色一致，接缝看不出来
+ICON_BG = "#191C22"
+
+# 收起后那个 24×24 的小方块。就是应用图标本身（深色方块 + 橙色对话框），
+# 从 build/res/grill.ico 缩到 24px 后内联在这里。
+#
+# 为什么内联成 base64 而不是打包成数据文件：PyInstaller onefile 下数据文件要
+# 走 --add-data + sys._MEIPASS，多一条出错的路；而这段只有 1.2 KB。
+# 为什么不用 Canvas 画：24px 下画不出对话框的圆角和三个点，糊成一团。
+_ICON_PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAADWklEQVR42o2VMYgdVRSGv3Pmzsx7"
+    "u5vduBJJiEVik1ik2C2UgAQFlVSpjIWtpBEJ9paKWAlRjJWINkEkAbsQMEIgTcRCAxpLA0ZCxOxq"
+    "9u17M3PPbzHvbcJiNjlcLpw7M+ee85/z/2P7nn4GACS5u3vB41lEjggz6900O7d6MEip3HrwSJPU"
+    "dW0zmYCmgQzq4bDwQihCZuwcTCBhRplKd59sjgRJUlnXbp4jG1Y4TUebdwpUFlSJHATh5qmqmskk"
+    "9bhEZDBMdze0b7ftWcL0kHSMO+v8uabFoSFC2b1w92RmSAI33Rvz9sv+1nFfHuDifyoUYfw95uzF"
+    "OPtdLNSEAMysWFxadvfCWR9xYtU/OlXMOy56pLYvw2G+5sVVu/G7frqpYUWIiHAJSZK60IlVi6Bt"
+    "yEGXkRB0QRdTgLtMDtqGCE6sWheaGYlpHAwGCQdBMYRkjIRI8wawKZy0YHRihMMg0YMiAXJAitkS"
+    "wiuuXs9nLjSjRiTOXW7PXW5JjBqdudBcvZ69gmkd0w+BNDua7riNxzr1+eTX3/JTi8Njh4s3PhkD"
+    "xw7PX7mR3/ls/Oyh4sf354a1SX0GJoFIQog+EEBQ1bz+fLo0x8oBX16y144mYHnJVg740ZXi1SOp"
+    "qiGmw92XJmQ91wpnbaRvTg+PP1fGpryCDA4B3lNr5hZEgw/t4rX25Mebu+csx4xrPTQ5a9wqjBzQ"
+    "4IYyZmg25coYKJMDjHGrnKfVmJn3mIXCTeevtV5QVrj1Y0Z/mxlm+GwvK7zg/LXWTTHrUrGw+IQU"
+    "IQYlP9/MG//qyMFUFWYQopgzg4jZlIsw/hrpg683v7zS7Bps3eS2d//BnLuplMDGRHOVffrm/MmX"
+    "aoJLPzQffrs5mqhw65uBcXstbt2NxeF9OhZFmg7kFpkWaiadXjiU1u/p3a82vvh+LEjOA69QJlua"
+    "I8eDtNZ0jnrPjbWRXjlS/vJHPv3e2o1b+cldbr1wbZO0vJ3Mtnf/wbaZCPWldcGeXX7nn2gyiwNr"
+    "Q4+USsPKqu71yLuuNbOAwri9nsuC+YKm085aaSCpSKW7J0mprHLOvULKpoh0msnqwxU3UOFFKitJ"
+    "U/GvB8OmmeSuVUiPJ/5mllJZVfW2vwh1PYiyiogd07gfp8dkq1H/AQ7XCTbXf808AAAAAElFTkSu"
+    "QmCC"
+)
+
+
 DEFAULTS = {
     # 总控
     "enabled": 1,
@@ -106,6 +137,9 @@ DEFAULTS = {
     "cooldown_seconds": 3.0,
     # 弹窗
     "show_moyu": 1,
+    # 常驻形态
+    "collapse_tray": 1,
+    "pill_collapsed": 0,
     # 提醒
     "sound": 1,
     "sound_uri": "beep",
@@ -241,6 +275,19 @@ def log_error(exc_text):
         ensure_dirs()
         with open(ERR_PATH, "a", encoding="utf-8") as f:
             f.write(f"\n[{datetime.now():%Y-%m-%d %H:%M:%S}]\n{exc_text}\n")
+    except Exception:
+        pass
+
+
+def tray_dbg(msg):
+    """托盘相关的调试日志。只有设了 GRILL_TRAY_DEBUG 才写，正式版等于空转。"""
+    if not os.environ.get("GRILL_TRAY_DEBUG"):
+        return
+    try:
+        stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        with open(os.path.join(DATA_DIR, "tray_debug.log"), "a",
+                  encoding="utf-8") as f:
+            f.write(f"[{stamp}] {msg}\n")
     except Exception:
         pass
 
@@ -1258,24 +1305,24 @@ class Pill:
     """
     右下角那条状态小条。
 
-    能收成一个**小图标**——不是隐藏，也不是一个空白小方块。隐藏起来用户就找不
-    到了，转头又双击一次 exe，于是两个实例并排跑（这正是"两条时间线"的老毛病）。
+    能收起来——不是隐藏。隐藏起来用户就找不到了，转头又双击一次 exe，于是两个
+    实例并排跑（这正是"两条时间线"的老毛病）。
 
-    收起后的样子跟任务栏/手机桌面上的那个图标同源：蓝底、白圈、中心点，中心点
-    的颜色就是当前状态（绿=正常、黄=快到点、红=正在被问）。位置还在右下角，
-    一眼能看见，点一下就展开。
+    收起后有两种形态，设置里选（`collapse_tray`）：
 
-    为什么不用系统托盘：Win11 把新注册的托盘图标一律塞进「^」溢出面板，默认不
-    显示。Shell_NotifyIconW 返回成功、GetRect 也能查到矩形，但用户在任务栏上
-    什么也看不到，还得自己去「任务栏设置 → 其他系统托盘图标」里手动打开——比
-    一个永远看得见的小图标差远了。
+    - **系统托盘图标**（默认）：真正进任务栏托盘，不占桌面。Win11 会把新注册的
+      图标先塞进「^」溢出面板，`Tray._promote()` 会把它提到任务栏上；提不上来
+      时用户还能去「任务栏设置 → 其他系统托盘图标」手动打开。
+      左键点图标 = 展开，右键 = 菜单。
+    - **悬浮小方块**：24×24，就是应用图标本身（深色方块 + 橙色对话框），
+      右下角一个小圆点表示状态。托不起托盘的时候自动退到这条。
+
+    两种形态都收得回来：托盘靠点图标，小方块靠点它自己；万一都不行，
+    再双击一次 exe 也会把它叫出来（见 `poke_existing`）。
     """
 
     W, H = 214, 40
-    MINI = 32
-    # 透明色键：选一个绝不会出现在界面上的颜色，收起时让方形窗口的背景整体透明，
-    # 只剩那个圆形的图标浮在桌面上，看着才像"图标"而不是"一个白框"。
-    KEY = "#FF00FE"
+    MINI = 24
 
     def __init__(self, app):
         self.app = app
@@ -1306,17 +1353,17 @@ class Pill:
         )
         self.lbl.pack(side="left", padx=(7, 0), fill="x", expand=True)
 
-        # 收起后要显示的那个小图标。用 Canvas 画而不是贴图片：不依赖任何资源文件，
-        # PyInstaller 打包进 exe 也不会丢，换缩放比例也不用重做素材。
+        # 收起后显示的那个小方块：就是应用图标本身，24×24。
+        # 状态靠右下角那个小圆点表达；收进托盘时靠鼠标悬停的提示文字。
         n = self.MINI
-        c = tk.Canvas(w, width=n, height=n, bg=self.KEY,
+        c = tk.Canvas(w, width=n, height=n, bg=ICON_BG,
                       highlightthickness=0, bd=0)
         self.icon = c
-        self.mini_body = c.create_oval(0.5, 0.5, n - 0.5, n - 0.5,
-                                       fill=ACCENT, outline=BG, width=1)
-        c.create_oval(6, 6, n - 6, n - 6, outline=BG, width=2)
-        self.mini_dot = c.create_oval(n / 2 - 3, n / 2 - 3, n / 2 + 3, n / 2 + 3,
-                                      fill=OK, outline="")
+        self._img = tk.PhotoImage(data=_ICON_PNG)     # 必须留引用，否则被回收
+        c.create_image(0, 0, anchor="nw", image=self._img)
+        self.mini_dot = c.create_oval(n - 8.5, n - 8.5, n - 0.5, n - 0.5,
+                                      fill=OK, outline=BG, width=1)
+        self._state_color = OK
 
         self._drag = None
         self._moved = False
@@ -1333,18 +1380,36 @@ class Pill:
         except Exception:
             log_error(traceback.format_exc())
 
+    def _use_tray(self):
+        """这一版该收进托盘还是缩成悬浮小图标。托盘注册不上就退回悬浮。"""
+        return bool(int(self.app.cfg.get("collapse_tray", 1))) and self.app.tray_ok()
+
+    def _remember(self, flag):
+        """记住"收着"还是"展开"，下次启动照原样来。
+
+        不然每次开机都得手动再收一遍——用托盘的人尤其烦这个。
+        """
+        try:
+            if int(self.app.cfg.get("pill_collapsed", 0)) != flag:
+                self.app.cfg["pill_collapsed"] = flag
+                save_cfg(self.app.cfg)
+        except Exception:
+            pass
+
     def collapse(self):
         if self.collapsed:
             return
         self.collapsed = True
+        self._remember(1)
+        if self._use_tray():
+            # 进托盘：小条整个收掉，桌面上什么都不留
+            try:
+                self.win.withdraw()
+            except Exception:
+                pass
+            self.app.tray_show(self.lbl.cget("text"))
+            return
         self.outer.pack_forget()
-        try:
-            # 让窗口背景透明，只剩圆形的图标本体。万一这台机器不支持
-            # -transparentcolor，背景也只是变成一块纯色，不影响使用。
-            self.win.configure(bg=self.KEY)
-            self.win.attributes("-transparentcolor", self.KEY)
-        except Exception:
-            pass
         self.icon.pack()
         self._apply()
 
@@ -1352,15 +1417,13 @@ class Pill:
         if not self.collapsed:
             return
         self.collapsed = False
+        self._remember(0)
+        self.app.tray_hide()
+        try:
+            self.win.deiconify()
+        except Exception:
+            pass
         self.icon.pack_forget()
-        try:
-            self.win.attributes("-transparentcolor", "")
-        except Exception:
-            pass
-        try:
-            self.win.configure(bg=EDGE)
-        except Exception:
-            pass
         self.outer.pack(fill="both", expand=True, padx=1, pady=1)
         self._apply()
 
@@ -1378,15 +1441,15 @@ class Pill:
                     return
                 if i >= times * 2:
                     if self.collapsed:
-                        self.icon.itemconfig(self.mini_body, fill=ACCENT)
+                        self.icon.itemconfig(self.mini_dot, fill=self._state_color)
                     else:
                         self.win.configure(bg=EDGE)
                     return
                 hot = (i % 2 == 0)
                 if self.collapsed:
-                    # 收起时没有边框可闪，就闪图标本体
-                    self.icon.itemconfig(self.mini_body,
-                                         fill=ACCENT_DARK if hot else ACCENT)
+                    # 收起时没有边框可闪，就闪状态点
+                    self.icon.itemconfig(self.mini_dot,
+                                         fill=BG if hot else self._state_color)
                 else:
                     self.win.configure(bg=ACCENT if hot else EDGE)
                 self.win.after(180, lambda: step(i + 1))
@@ -1417,24 +1480,7 @@ class Pill:
         self._drag = None
 
     def _menu(self, e):
-        m = tk.Menu(self.win, tearoff=0)
-        m.add_command(label="看记录", command=self.app.open_history)
-        m.add_command(label="行为统计", command=self.app.open_usage)
-        m.add_command(label="立刻问我一次", command=lambda: self.app.show_popup("normal"))
-        m.add_separator()
-        if self.app.cfg.get("enabled", 1):
-            m.add_command(label="关闭提醒（总开关）", command=self.app.set_enabled_false)
-        else:
-            m.add_command(label="打开提醒（总开关）", command=self.app.set_enabled_true)
-        m.add_separator()
-        m.add_command(label="暂停 30 分钟", command=lambda: self.app.pause(30))
-        m.add_command(label="暂停 1 小时", command=lambda: self.app.pause(60))
-        m.add_command(label="今天不再提醒", command=lambda: self.app.pause_until_tomorrow())
-        m.add_command(label="立刻恢复", command=lambda: self.app.pause(0))
-        m.add_separator()
-        m.add_command(label="展开" if self.collapsed else "收成小图标", command=self.toggle)
-        m.add_command(label="设置", command=self.app.open_settings)
-        m.add_command(label="退出", command=self.app.quit)
+        m = build_pill_menu(self.app, self.win, self.collapsed)
         try:
             m.tk_popup(e.x_root, e.y_root)
         finally:
@@ -1446,10 +1492,457 @@ class Pill:
                 return
             self.lbl.config(text=text)
             self.dot.config(fg=color)
-            # 收起后没有文字，状态全靠中心点那个颜色表达
+            self._state_color = color
+            # 收起后没有文字，状态全靠右下角那个小圆点的颜色表达
             self.icon.itemconfig(self.mini_dot, fill=color)
+            # 收进托盘时，状态靠鼠标悬停的提示文字
+            if self.collapsed and self._use_tray():
+                self.app.tray_tip(text)
         except Exception:
             pass
+
+
+def build_pill_menu(app, parent, collapsed):
+    """小条右键菜单。小条和托盘图标共用同一份——两处各写一份迟早会走岔。"""
+    m = tk.Menu(parent, tearoff=0)
+    m.add_command(label="看记录", command=app.open_history)
+    m.add_command(label="行为统计", command=app.open_usage)
+    m.add_command(label="立刻问我一次", command=lambda: app.show_popup("normal"))
+    m.add_separator()
+    if app.cfg.get("enabled", 1):
+        m.add_command(label="关闭提醒（总开关）", command=app.set_enabled_false)
+    else:
+        m.add_command(label="打开提醒（总开关）", command=app.set_enabled_true)
+    m.add_separator()
+    m.add_command(label="暂停 30 分钟", command=lambda: app.pause(30))
+    m.add_command(label="暂停 1 小时", command=lambda: app.pause(60))
+    m.add_command(label="今天不再提醒", command=app.pause_until_tomorrow)
+    m.add_command(label="立刻恢复", command=lambda: app.pause(0))
+    m.add_separator()
+    m.add_command(label="展开小条" if collapsed else "收起来",
+                  command=app.toggle_pill)
+    m.add_command(label="设置", command=app.open_settings)
+    m.add_command(label="退出", command=app.quit)
+    return m
+
+
+# ---------------------------------------------------------------- 系统托盘
+
+WM_TRAY = 0x8001            # WM_APP + 1，托盘回调消息
+NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
+NIF_MESSAGE, NIF_ICON, NIF_TIP = 0x01, 0x02, 0x04
+IMAGE_ICON = 1
+LR_LOADFROMFILE = 0x10
+IDI_APPLICATION = 32512
+WM_LBUTTONUP = 0x0202
+WM_LBUTTONDBLCLK = 0x0203
+WM_RBUTTONUP = 0x0205
+WM_CLOSE = 0x0010
+# 新版 Shell 左键不再发 WM_LBUTTONUP，改发这两个（都是 WM_USER 段）
+NIN_SELECT = 0x0400
+NIN_KEYSELECT = 0x0401
+
+
+class GUID(ctypes.Structure):
+    _fields_ = [("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_byte * 8)]
+
+
+class NOTIFYICONDATAW(ctypes.Structure):
+    """Win10/11 用的完整版（976 字节）。少一个字段 Shell_NotifyIconW 就返回失败。"""
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("hWnd", wintypes.HWND),
+        ("uID", wintypes.UINT),
+        ("uFlags", wintypes.UINT),
+        ("uCallbackMessage", wintypes.UINT),
+        ("hIcon", wintypes.HICON),
+        ("szTip", wintypes.WCHAR * 128),
+        ("dwState", wintypes.DWORD),
+        ("dwStateMask", wintypes.DWORD),
+        ("szInfo", wintypes.WCHAR * 256),
+        ("uVersion", wintypes.UINT),
+        ("szInfoTitle", wintypes.WCHAR * 64),
+        ("dwInfoFlags", wintypes.DWORD),
+        ("guidItem", GUID),
+        ("hBalloonIcon", wintypes.HICON),
+    ]
+
+
+WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
+                             wintypes.WPARAM, wintypes.LPARAM)
+
+
+class WNDCLASSW(ctypes.Structure):
+    _fields_ = [("style", wintypes.UINT),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE),
+                ("hIcon", wintypes.HICON),
+                ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HBRUSH),
+                ("lpszMenuName", wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR)]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class MSG(ctypes.Structure):
+    """注意最后的 lPrivate：Win8 之后加的字段，少了它 sizeof 会小 8 字节，
+    GetMessageW 往里写就越界了。"""
+    _fields_ = [("hwnd", wintypes.HWND),
+                ("message", wintypes.UINT),
+                ("wParam", wintypes.WPARAM),
+                ("lParam", wintypes.LPARAM),
+                ("time", wintypes.DWORD),
+                ("pt", POINT),
+                ("lPrivate", wintypes.DWORD)]
+
+
+def _tray_icon():
+    """拿一个 HICON。
+
+    打包后 exe 里就嵌着 grill.ico，直接抽第 0 个；跑源码时读仓库里的那份；
+    都没有就退到系统默认图标——图标丑一点，总比托盘里什么都没有强。
+    """
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    try:
+        sh = ctypes.WinDLL("shell32", use_last_error=True)
+        sh.ExtractIconExW.argtypes = [wintypes.LPCWSTR, ctypes.c_int,
+                                      ctypes.POINTER(wintypes.HICON),
+                                      ctypes.POINTER(wintypes.HICON),
+                                      wintypes.UINT]
+        sh.ExtractIconExW.restype = wintypes.UINT
+        big, small = wintypes.HICON(), wintypes.HICON()
+        if sh.ExtractIconExW(sys.executable, 0, ctypes.byref(big),
+                             ctypes.byref(small), 1) > 0:
+            if small.value:
+                return small
+            if big.value:
+                return big
+    except Exception:
+        pass
+    try:
+        ico = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "build", "res", "grill.ico")
+        if os.path.exists(ico):
+            u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                                     wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                     wintypes.UINT]
+            u.LoadImageW.restype = wintypes.HANDLE
+            h = u.LoadImageW(None, ico, IMAGE_ICON, 0, 0, LR_LOADFROMFILE)
+            if h:
+                return wintypes.HICON(h)
+    except Exception:
+        pass
+    u.LoadIconW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR]
+    u.LoadIconW.restype = wintypes.HICON
+    return u.LoadIconW(None, ctypes.cast(IDI_APPLICATION, wintypes.LPCWSTR))
+
+
+class Tray:
+    """右下角的系统托盘图标。
+
+    **为什么用"独立线程 + 队列"，而不是窗口过程回调 Python**：
+
+    最自然的写法是 `CreateWindowExW` 时挂一个 ctypes 的 `WNDPROC`，在里面直接
+    处理鼠标事件。实测在 CPython 3.14 + Tk 上这条路会直接把进程打崩：
+
+        Fatal Python error: PyEval_RestoreThread: the function must be called
+        with the GIL held ... (the current Python thread state is NULL)
+
+    因为 Tk 的 mainloop 是在**释放 GIL** 的状态下调 `DispatchMessageW` 的，消息
+    一路派发到我们的 Python 回调时，线程状态是空的。点一下托盘图标，程序就没了。
+
+    所以这里反过来：窗口过程挂系统的 `DefWindowProcW`（纯 C，不回调 Python），
+    自己开一个线程 `GetMessageW` 把消息取出来，只把"发生了什么"丢进队列；
+    主线程用 `root.after` 定期捞队列再动界面。全程没有 C→Python 的回调。
+
+    Win11 会把新注册的图标塞进「^」溢出面板、默认不显示，`_promote()` 里
+    把对应的注册表项打开——见那里的注释。
+    """
+
+    CLASS = "GrillMeTrayWnd"
+    _last_tip = "质问我"
+
+    def __init__(self, app, tip="质问我"):
+        self.app = app
+        self.ok = False
+        self.hwnd = None
+        self._nid = None
+        self._icon = None
+        self._added = False
+        self._taskbar_created = 0
+        self._stop = False
+        self._q = queue.Queue()
+        self._ready = threading.Event()
+        self._thread = None
+        self._last_tip = tip or "质问我"
+        try:
+            self._thread = threading.Thread(target=self._run, name="grill-tray",
+                                            daemon=True)
+            self._thread.start()
+            if not self._ready.wait(5) or not self.hwnd:
+                raise OSError("托盘窗口没建起来")
+            # 先加一次再删掉：只为了探"这台机器能不能注册托盘图标"，
+            # 图标本身等真的收起时才挂上去。
+            self.ok = self._add(self._last_tip)
+            if self.ok:
+                self.remove()
+            self.app.root.after(150, self._pump)
+        except Exception:
+            log_error(traceback.format_exc())
+            self.ok = False
+
+    # ---- 后台线程：建窗口 + 取消息
+
+    def _run(self):
+        try:
+            u = ctypes.WinDLL("user32", use_last_error=True)
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            u.DefWindowProcW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                         wintypes.WPARAM, wintypes.LPARAM]
+            u.DefWindowProcW.restype = ctypes.c_ssize_t
+            u.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASSW)]
+            u.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR,
+                                          wintypes.LPCWSTR, wintypes.DWORD,
+                                          ctypes.c_int, ctypes.c_int,
+                                          ctypes.c_int, ctypes.c_int,
+                                          wintypes.HWND, wintypes.HMENU,
+                                          wintypes.HINSTANCE, wintypes.LPVOID]
+            u.CreateWindowExW.restype = wintypes.HWND
+            u.RegisterWindowMessageW.argtypes = [wintypes.LPCWSTR]
+            u.RegisterWindowMessageW.restype = wintypes.UINT
+            u.GetMessageW.argtypes = [ctypes.POINTER(MSG), wintypes.HWND,
+                                      wintypes.UINT, wintypes.UINT]
+            u.GetMessageW.restype = ctypes.c_int
+            k.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+            k.GetModuleHandleW.restype = wintypes.HINSTANCE
+
+            self._u = u
+            # 窗口过程直接用系统的，不挂 Python 回调（见类注释）
+            proc = ctypes.cast(u.DefWindowProcW, WNDPROC)
+            hinst = k.GetModuleHandleW(None)
+            wc = WNDCLASSW()
+            wc.style = 0
+            wc.lpfnWndProc = proc
+            wc.cbClsExtra = 0
+            wc.cbWndExtra = 0
+            wc.hInstance = hinst
+            wc.hIcon = None
+            wc.hCursor = None
+            wc.hbrBackground = None
+            wc.lpszMenuName = None
+            wc.lpszClassName = self.CLASS
+            u.RegisterClassW(ctypes.byref(wc))
+
+            # 一个永远不显示的普通窗口，只用来收托盘消息。
+            # 用 HWND_MESSAGE（消息专用窗口）收不到任务栏重建的广播。
+            self.hwnd = u.CreateWindowExW(0, self.CLASS, "GrillMe", 0,
+                                          0, 0, 0, 0, None, None, hinst, None)
+            if not self.hwnd:
+                return
+            # 资源管理器重启后托盘里的图标会全部消失，必须自己加回来
+            self._taskbar_created = u.RegisterWindowMessageW("TaskbarCreated")
+            self._ready.set()
+
+            msg = MSG()
+            tray_dbg(f"消息循环开始 hwnd=0x{self.hwnd:X} "
+                     f"callback=0x{WM_TRAY:X} taskbar_created=0x{self._taskbar_created:X} "
+                     f"sizeof(MSG)={ctypes.sizeof(MSG)}")
+            while not self._stop:
+                # 不按 hwnd 过滤：万一 Shell 把回调投到了别的窗口（或者投成线程
+                # 消息），过滤掉就永远查不出来。这个线程只有这一个窗口，放宽无害。
+                r = u.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if r == 0 or r == -1:
+                    tray_dbg(f"GetMessage 返回 {r}，循环退出")
+                    break
+                tray_dbg(f"收到消息 0x{msg.message:X} hwnd=0x{(msg.hwnd or 0):X} "
+                         f"wParam=0x{msg.wParam:X} lParam=0x{msg.lParam:X}")
+                if msg.message == WM_TRAY:
+                    self._q.put(("click", msg.lParam & 0xFFFF))
+                elif msg.message == WM_CLOSE:
+                    break
+                elif self._taskbar_created and msg.message == self._taskbar_created:
+                    self._q.put(("taskbar", 0))
+        except Exception:
+            log_error(traceback.format_exc())
+        finally:
+            self._ready.set()
+
+    # ---- 主线程：捞队列
+
+    def _pump(self):
+        try:
+            while True:
+                kind, ev = self._q.get_nowait()
+                tray_dbg(f"pump 取到 {kind} ev=0x{ev:X}")
+                if kind == "click":
+                    pill = getattr(self.app, "pill", None)
+                    if ev in (WM_LBUTTONUP, WM_LBUTTONDBLCLK,
+                              NIN_SELECT, NIN_KEYSELECT):
+                        if pill is not None:
+                            tray_dbg("→ 展开小条")
+                            pill.expand()
+                    elif ev == WM_RBUTTONUP:
+                        self._menu()
+                elif kind == "taskbar":
+                    self._added = False
+                    self._add(self._last_tip)
+        except queue.Empty:
+            pass
+        except Exception:
+            log_error(traceback.format_exc())
+        if not self._stop:
+            try:
+                self.app.root.after(150, self._pump)
+            except Exception:
+                pass
+
+    # ---- 加/删图标
+
+    def _add(self, tip):
+        try:
+            self._last_tip = (tip or "质问我")[:127]
+            if self._icon is None:
+                self._icon = _tray_icon()
+            nid = NOTIFYICONDATAW()
+            nid.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+            nid.hWnd = self.hwnd
+            nid.uID = 1
+            nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+            nid.uCallbackMessage = WM_TRAY
+            nid.hIcon = self._icon
+            nid.szTip = self._last_tip
+            u = ctypes.WinDLL("shell32", use_last_error=True)
+            u.Shell_NotifyIconW.argtypes = [wintypes.DWORD,
+                                            ctypes.POINTER(NOTIFYICONDATAW)]
+            u.Shell_NotifyIconW.restype = wintypes.BOOL
+            ok = bool(u.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid)))
+            self._nid = nid
+            self._added = ok
+            tray_dbg(f"NIM_ADD ok={ok} err={ctypes.get_last_error()} tip={self._last_tip!r}")
+            return ok
+        except Exception:
+            log_error(traceback.format_exc())
+            return False
+
+    def set_tip(self, text):
+        if not self._added or self._nid is None:
+            return
+        try:
+            text = (text or "质问我")[:127]
+            if text == self._last_tip:
+                return          # 每秒的 tick 都会走到这儿，没变就别去骚扰 Shell
+            self._last_tip = text
+            self._nid.uFlags = NIF_TIP
+            self._nid.szTip = text
+            u = ctypes.WinDLL("shell32", use_last_error=True)
+            u.Shell_NotifyIconW.argtypes = [wintypes.DWORD,
+                                            ctypes.POINTER(NOTIFYICONDATAW)]
+            u.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(self._nid))
+        except Exception:
+            pass
+
+    def remove(self):
+        if not self._added or self._nid is None:
+            return
+        try:
+            u = ctypes.WinDLL("shell32", use_last_error=True)
+            u.Shell_NotifyIconW.argtypes = [wintypes.DWORD,
+                                            ctypes.POINTER(NOTIFYICONDATAW)]
+            u.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self._nid))
+            tray_dbg("NIM_DELETE")
+        except Exception:
+            pass
+        self._added = False
+
+    def destroy(self):
+        self.remove()
+        self._stop = True
+        try:
+            if self.hwnd:
+                self._u.PostMessageW(self.hwnd, WM_CLOSE, 0, 0)
+        except Exception:
+            pass
+        self.hwnd = None
+
+    # ---- Win11：把它从「^」里提上来
+
+    def _promote(self, attempt=0):
+        """Win11 把新注册的托盘图标一律塞进「^」溢出面板，默认不显示。
+
+        系统没给 API，但显示偏好是存在
+        `HKCU\\Control Panel\\NotifyIconSettings\\<按 exe 路径算出来的数字>`
+        底下的，`IsPromoted=1` 就等于「在任务栏上显示」。Explorer 看到这个值
+        就会把图标挪出来——等于替用户去设置里点了一次。
+
+        只改 `ExecutablePath` 正好等于我们自己那一项，别人的一概不碰。
+        这一项要等 Explorer 见过图标之后才会建出来，所以得隔几秒重试几次。
+        """
+        if not self._added:
+            return
+        if not getattr(sys, "frozen", False) and not os.environ.get("GRILL_PROMOTE_TEST"):
+            # 跑源码时这个键属于 python.exe，改它会把别的 Python 程序的图标也提上来
+            return
+        try:
+            import winreg
+        except Exception:
+            return
+        try:
+            root = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                  r"Control Panel\NotifyIconSettings")
+        except OSError:
+            return                      # Win10 没这个键，正常
+        try:
+            me = os.path.normcase(os.path.abspath(sys.executable))
+            n = winreg.QueryInfoKey(root)[0]
+            for i in range(n):
+                name = winreg.EnumKey(root, i)
+                try:
+                    sk = winreg.OpenKey(root, name, 0, winreg.KEY_READ
+                                        | winreg.KEY_SET_VALUE)
+                except OSError:
+                    continue
+                try:
+                    exe = str(winreg.QueryValueEx(sk, "ExecutablePath")[0] or "")
+                except OSError:
+                    exe = ""
+                if exe and os.path.normcase(os.path.abspath(exe)) == me:
+                    try:
+                        cur = winreg.QueryValueEx(sk, "IsPromoted")[0]
+                    except OSError:
+                        cur = None
+                    if cur != 1:
+                        winreg.SetValueEx(sk, "IsPromoted", 0, winreg.REG_DWORD, 1)
+                        tray_dbg(f"IsPromoted 置 1: {name}")
+                    else:
+                        tray_dbg(f"IsPromoted 已是 1: {name}")
+                    return
+        finally:
+            try:
+                winreg.CloseKey(root)
+            except Exception:
+                pass
+        # 还没建出来，过几秒再看。三次都找不到就算了——用户自己点一次也就好了。
+        if attempt < 3:
+            try:
+                self.app.root.after(3000, lambda: self._promote(attempt + 1))
+            except Exception:
+                pass
+
+    def _menu(self):
+        x, y = self.app.root.winfo_pointerxy()
+        m = build_pill_menu(self.app, self.app.root, True)
+        try:
+            m.tk_popup(x, y)
+        finally:
+            m.grab_release()
 
 
 # ---------------------------------------------------------------- 开机自启
@@ -1601,9 +2094,46 @@ class AskMe:
         self._cleanup_done = False
 
         self._restore_state()
+        self.tray = Tray(self)
         self.pill = Pill(self)
+        if int(self.cfg.get("pill_collapsed", 0)):
+            # 上次是收着的，这次也收着——但别在窗口还没画好之前就收
+            self.root.after(400, self.pill.collapse)
         self.root.after(1000, self.tick)
         self.root.after(1200, self._startup_chores)
+
+    # ---------------- 收起形态
+
+    def tray_ok(self):
+        return bool(self.tray and self.tray.ok)
+
+    def tray_show(self, tip=""):
+        if self.tray and self.tray.ok:
+            self.tray._add(tip or "质问我")
+            self.tray._promote()
+
+    def tray_hide(self):
+        if self.tray:
+            self.tray.remove()
+
+    def tray_tip(self, text):
+        if self.tray and self.tray.ok:
+            self.tray.set_tip(text)
+
+    def toggle_pill(self):
+        self.pill.toggle()
+
+    def apply_collapse_mode(self):
+        """设置里换了收起形态之后立刻生效。
+
+        只在**已经收着**的时候按新形态重收一次，好让人当场看见区别。
+        如果小条是展开的，就不动它——万一托盘图标在某人机器上点不动，
+        强行收起来等于把人关在门外。展开状态下改设置，下次收起来时用新形态。
+        """
+        if not self.pill.collapsed:
+            return
+        self.pill.expand()
+        self.pill.collapse()
 
     def _startup_chores(self):
         try:
@@ -1922,6 +2452,8 @@ class AskMe:
 
     def apply_settings(self, new_cfg):
         old_due = self.next_due
+        mode_changed = (int(self.cfg.get("collapse_tray", 1))
+                        != int(new_cfg.get("collapse_tray", 1)))
         self.cfg.update(new_cfg)
         save_cfg(self.cfg)
         lo = int(self.cfg["min_minutes"]) * 60
@@ -1929,12 +2461,20 @@ class AskMe:
         if not (lo <= old_due <= hi):
             self.next_due = random.randint(lo, hi)
             self.since_last = 0
+        if mode_changed:
+            # 换了收起形态就当场收一次，不然用户改完设置看不到任何变化
+            self.root.after(60, self.apply_collapse_mode)
 
     def quit(self):
         self._closing = True
         self._save_state()
         try:
             self.usage.save(force=True)
+        except Exception:
+            pass
+        # 托盘图标不会随进程消失，得自己摘掉，否则任务栏上留一个点不动的僵尸图标
+        try:
+            self.tray.destroy()
         except Exception:
             pass
         try:
@@ -2660,7 +3200,13 @@ class SettingsWindow:
         self._bool(p, "enabled", "开启提醒", "总开关。等于「是否弹窗」——弹窗是这个工具唯一的入口。")
 
         self._section(p, "启动与常驻",
-                      "程序没有主窗口，界面上只有右下角那条。不想要那条就收进托盘，它照样计时。")
+                      "程序没有主窗口，界面上只有右下角那条。收起来之后它照样计时。")
+        self._bool(p, "collapse_tray", "收起时用系统托盘图标",
+                   "开：收进任务栏托盘，桌面上什么都不留。左键点一下图标把它叫回来，"
+                   "右键出菜单。Win11 会把新图标先塞进「^」里，程序会自动把它提到"
+                   "任务栏；万一没提上来，去「设置 → 个性化 → 任务栏 → 其他系统"
+                   "托盘图标」里打开一次就行。"
+                   "关：缩成右下角一个小方块，永远看得见。")
         self._sys_bool(p, "开机自启动",
                        "登录 Windows 后自己开始计时。否则每天开机都得记得手动点一下。",
                        lambda: bool(autostart_get()), autostart_set)
@@ -3047,7 +3593,8 @@ def main():
         if woke:
             body = ("质问我已经在运行了。\n\n"
                     "它就在屏幕右下角，刚才已经把它点亮了一下——"
-                    "没看见的话，看右下角那条小条（收起来时是个小图标）。\n\n"
+                    "没看见的话：收起时它要么是任务栏托盘里的那个小方块图标"
+                    "（左键点一下就叫回来），要么是右下角一个悬浮的小方块。\n\n"
                     "这次不会再开第二个，所以不会出现两套时间线。")
         else:
             body = ("质问我已经在运行了。\n\n"

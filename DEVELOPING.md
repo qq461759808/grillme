@@ -8,10 +8,19 @@
 ## 0. 一句话现状
 
 两端都已完成并发布在 https://github.com/qq461759808/grillme
-（`v1.1.1` 最新，`v1.1.0` / `v1.0.0` 是前两个版本）：
-电脑端是单文件 Python（`grill.py`，约 3000 行）+ PyInstaller 打的 exe；
+（`v1.1.2` 最新，`v1.1.1` / `v1.1.0` / `v1.0.0` 是前三个版本）：
+电脑端是单文件 Python（`grill.py`，约 3400 行）+ PyInstaller 打的 exe；
 安卓端是纯 Java（15 个文件，无 AndroidX、无 Kotlin、无第三方库）。
 四语言词表在 `lang/strings.json`，203 条 × zh/en/ja/ru。
+
+1.1.2 只动了电脑端的收起形态：
+
+- **系统托盘图标回来了，而且做成设置项**：`collapse_tray=1`（默认）收进任务栏托盘，
+  `0` 缩成右下角悬浮小方块。Win11 会把新图标塞进「^」，程序改注册表自动提到任务栏（§6.17）。
+- 悬浮小方块从 32×32 的蓝底白圈圆环（用户说像"小眼睛"）改成 **24×24 的应用图标本体**。
+- 上次收着的话，下次启动照原样收着（`pill_collapsed`）。
+- 托盘点击这条路在这台机器上没法用合成鼠标验证（系统吞注入按键），
+  是靠 `PostMessageW` 验证消息链路的——细节见 §6.17 最后一段。
 
 1.1.0 相比 1.0.0 的三处变化（都记在 §6）：
 
@@ -65,7 +74,7 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 
 ## 3. 电脑端 `grill.py`
 
-单文件约 3000 行，只依赖标准库（**没有第三方包，这是刻意的**，见 §8）。按段落分：
+单文件约 3400 行，只依赖标准库（**没有第三方包，这是刻意的**，见 §8）。按段落分：
 
 | 段落 | 职责 |
 |---|---|
@@ -80,7 +89,9 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 | `webdav_test` / `pick_rest_tip` | 同步与文案 |
 | `Switch` / `ScrollFrame` / `PromptText` / `button` | 手写的 tkinter 小控件 |
 | `AskPopup` | 质问弹窗 |
-| `Pill` | 右下角小条，能收成 40×40 的小圆点（`collapse()` / `expand()` / `flash()`） |
+| `Pill` | 右下角小条。收起形态二选一：进系统托盘，或缩成 24×24 应用图标（§6.17） |
+| `Tray` / `NOTIFYICONDATAW` / `_tray_icon` | 系统托盘图标。**独立线程 + 队列，不能挂 Python 窗口过程**（§6.17） |
+| `build_pill_menu` | 小条和托盘共用的右键菜单 |
 | `autostart_target` / `autostart_get` / `autostart_set` | 开机自启，写 `HKCU\...\Run` |
 | `acquire_single_instance` / `poke_existing` | **单实例锁**（§6.14） |
 | `AskMe` | 主程序：`tick()` 每秒跑一次 |
@@ -105,6 +116,7 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 | `usage/*.json` | 按应用累计 |
 | `shots/*.jpg` | 弹窗前的截图 + `thumbs/` 缩略图 |
 | `error.log` | 异常堆栈 |
+| `tray_debug.log` | 只有设了 `GRILL_TRAY_DEBUG=1` 才写：托盘收到的每条消息（§6.17） |
 
 `log.jsonl` 一条的样子：
 
@@ -166,13 +178,18 @@ dist/                    产物，被 .gitignore 排除，只进 release 附件
 | 形态 | 尺寸 | 组成 |
 |---|---|---|
 | 展开 | 214×40 | `Frame` + 状态点 + 文字，白底细边框 |
-| 收起 | 32×32 | 一个 `Canvas` 画的应用图标，窗口背景用 `-transparentcolor` 抠掉 |
+| 收起（悬浮） | 24×24 | 一个 `Canvas` 贴的应用图标本体，右下角一个小圆点当状态灯 |
+| 收起（托盘） | — | 窗口 `withdraw()`，改用系统托盘图标；悬停显示状态文字 |
+
+收起成哪种由设置项 `collapse_tray` 决定（1 = 托盘，0 = 悬浮方块），
+**托盘注册不上时自动退回悬浮方块**（`Pill._use_tray()`）。
 
 收起态的定位按**右下边缘**算（`self._right` / `self._bottom`），不是左上角——
 不然宽高一变，小条就一边缩一边往左上跳。拖拽时同步更新这两个值。
 
-`flash()` 在两种形态下都要给动静：展开时闪窗口边框，收起时闪图标本体
-（`itemconfig(self.mini_body, fill=...)`），否则用户被拦下来时什么提示都看不到。
+`flash()` 在三种状态下都要给动静：展开时闪窗口边框，悬浮方块闪状态点
+（`itemconfig(self.mini_dot, fill=...)`），收进托盘时闪不了——只能靠
+`poke_existing()` 把窗口叫出来再闪，否则用户被拦下来时什么提示都看不到。
 
 ### 5.3 打包后才有意义的两段代码
 
@@ -367,30 +384,86 @@ GBK 编不出来，`print` 直接抛。
 **修法**：读 JSON 一律 `encoding="utf-8-sig"`（`load_json` 和 `read_log` 都改了）。
 `save_json` 仍然写不带 BOM 的 UTF-8。
 
-### 6.17 想加系统托盘图标的话，先看这条
+### 6.17 系统托盘：三个坑，一个比一个隐蔽
 
-这条是给"下次又想把小条塞进托盘"的人看的。
+托盘图标现在是**默认的收起形态**（设置项 `collapse_tray`，可以关掉改用悬浮小方块）。
+做它的时候踩了三个坑，每个都会让程序"看着没问题、其实坏了"。
 
-**ctypes 回调里 LPARAM 会溢出**：`DefWindowProcW` / `PostMessageW` 不声明 `argtypes` 时，
+**坑一：窗口过程绝对不能挂 Python 回调。**
+
+最自然的写法是 `CreateWindowExW` 时挂一个 ctypes 的 `WNDPROC`，在里面处理鼠标事件。
+在 CPython 3.14 + Tk 上这条路会把进程直接打崩：
+
+```
+Fatal Python error: PyEval_RestoreThread: the function must be called
+with the GIL held ... (the current Python thread state is NULL)
+```
+
+因为 Tk 的 `mainloop` 是在**释放 GIL** 的状态下调 `DispatchMessageW` 的，
+消息派发到 Python 回调时线程状态是空的。表现是"点一下托盘图标，程序就没了"。
+
+正确做法（`Tray` 现在就是这么写的）：窗口过程挂系统的 `DefWindowProcW`
+（`ctypes.cast(u.DefWindowProcW, WNDPROC)`，纯 C，不回调 Python），
+另开一个 daemon 线程 `GetMessageW` 把消息取出来，只把"发生了什么"丢进
+`queue.Queue`；主线程用 `root.after(150, self._pump)` 捞队列再动界面。
+全程没有 C→Python 的回调，就不会崩。
+
+**坑二：ctypes 参数不声明 `argtypes` 会静默出错。**
+
+`DefWindowProcW` / `PostMessageW` / `CreateWindowExW` 不声明 `argtypes` 时，
 ctypes 默认把参数当 32 位 `int`，64 位下 LPARAM 一超过 2^31 就抛 `OverflowError`。
-而且异常是在**窗口过程里**抛的，无窗口 exe 连日志都看不到，表现就是"点了没反应"。
+而且异常是在窗口过程里抛的，无窗口 exe 连日志都看不到，表现就是"点了没反应"。
 所有 `HWND` / `LPARAM` / `WPARAM` / `HINSTANCE` 参数都必须显式声明。
 
-**更要命的是 Win11 的行为**：`Shell_NotifyIconW(NIM_ADD)` 返回成功、
-`Shell_NotifyIconGetRect` 也能查到矩形，但图标**不会**出现在任务栏或 `^` 溢出面板里，
-必须由用户去「设置 → 个性化 → 任务栏 → 其他系统托盘图标」手动打开。
-所以最后没走托盘：改成「小条缩成右下角一个小图标」（`Pill.collapse()`），
-不依赖 Explorer、位置永远在右下角、点了就展开。
+**坑三：Win11 默认把新图标塞进「^」，但有办法自动提出来。**
 
-**"小图标"不是"缩成一个小圆点"**：中间试过一版，收起后是个 40×40 的白框里放一个
-绿色 `●`，用户的原话是"这个奇怪的样子"。现在用 Canvas 直接画出应用图标本体
-（蓝底 + 白圈 + 中心点，中心点的颜色就是状态色），窗口用
-`-transparentcolor` 把方形背景整体透明掉，屏幕上只剩那个圆——看着才是"图标"。
-用 Canvas 画而不是贴 PNG，是为了不依赖资源文件，PyInstaller 打包也不会丢。
-注意展开时要把 `-transparentcolor` 设回空串，否则小条的白底会跟着变透明。
+`Shell_NotifyIconW(NIM_ADD)` 返回成功、图标也确实注册上了，但 Win11 把它放进
+`^` 溢出面板、任务栏上看不见。系统没给 API，但显示偏好存在注册表里：
 
-如果哪天真的要做托盘，`TaskbarCreated` 那条消息必须处理
-（`RegisterWindowMessageW("TaskbarCreated")`），否则资源管理器重启一次图标就永久消失。
+```
+HKCU\Control Panel\NotifyIconSettings\<按 exe 路径算出来的数字>
+    ExecutablePath  REG_SZ   图标所属 exe 的完整路径
+    IsPromoted      REG_DWORD 1 = 显示在任务栏
+```
+
+`Tray._promote()` 遍历这个键，只改 `ExecutablePath` 正好等于自己那一项，
+把 `IsPromoted` 置 1——Explorer 看到就会把图标挪出来，等于替用户去设置里点了一次。
+两个注意点：
+
+- 这个键要**等 Explorer 见过图标之后**才会建出来，所以得隔几秒重试几次；
+- 跑源码时 `sys.executable` 是 `python.exe`，改它会把**别的** Python 程序的图标
+  一起提上来。所以 `_promote()` 里有 `getattr(sys, "frozen", False)` 的判断，
+  只有打包后的 exe 才动注册表（调试时可以用 `GRILL_PROMOTE_TEST=1` 强行放开）。
+
+**关于 `Shell_NotifyIconGetRect` 返回 `0x80070057 (E_INVALIDARG)`：这是正常的。**
+那个 API 要求图标用 `NOTIFYICON_VERSION_4` 注册，我们用默认的 V0，
+所以查不到矩形不代表图标没显示——别被它误导（我就被误导过一轮）。
+
+**顺便：V0 和 V4 的回调消息不一样。** V4 左键发 `NIN_SELECT` / `NIN_KEYSELECT`
+（`WM_USER + 0` / `WM_USER + 1`），V0 发 `WM_LBUTTONUP`。我们留在 V0（兼容性最好），
+但 `_pump()` 里两种都认，免得哪天有人加了 `NIM_SETVERSION` 就点不动了。
+回调消息本身用 `WM_APP + 1`（`0x8001`），别用 `WM_USER` 段——那里是 Shell 自己的地盘。
+
+**`TaskbarCreated` 必须处理**（`RegisterWindowMessageW("TaskbarCreated")`），
+否则资源管理器重启一次，图标就永久消失。
+
+**收起图标别画圆环。** 中间试过一版：收起后是 32×32 蓝底白圈的圆环，
+用户的原话是"这个蓝色小眼睛感觉不如之前的小方块"。现在直接贴应用图标本体
+（深色圆角方块 + 橙色对话框），24×24，状态靠右下角一个小圆点表达。
+图标是 24×24 的 PNG 以 base64 内联在 `grill.py` 里（`_ICON_PNG`，915 字节）——
+不走 `--add-data`，少一条 onefile 下 `sys._MEIPASS` 的出错路径。
+注意 `tk.PhotoImage` 必须留引用（`self._img`），否则被 GC 掉图就没了。
+
+**调试开关**：设 `GRILL_TRAY_DEBUG=1` 会把托盘收到的每条消息写进
+`%APPDATA%\Grill\tray_debug.log`。查"点了没反应"先看这个文件——
+有消息说明是界面的事，没消息说明消息根本没到，别在界面上瞎找。
+
+**这个环境没法验证真实点击**：这台机器的沙箱会吞掉合成的鼠标按键
+（`mouse_event` 和 `SendInput` 都返回成功，但系统不处理，连"点一下关掉溢出面板"
+都做不到；`SetCursorPos` 移动光标却是好的）。所以托盘点击是靠
+`PostMessageW(hwnd, WM_APP+1, 1, WM_LBUTTONUP)` 验证的——这条通了，
+说明消息循环和展开链路都对，剩下的只有 Explorer 投递这一环，那是 API 契约。
+兜底路径（再双击一次 exe → `poke_existing()` → 展开）可以真机验证，走的就是这条。
 
 ### 6.18 安卓："每跑一次 +1"的计时，一卡就永久落后
 
@@ -499,11 +572,12 @@ cd android && gradle assembleRelease
 5. `git tag`、push、传 release 附件。
 
 ```bash
-git tag -f v1.1.1 && git push <remote> main:main "+refs/tags/v1.1.1:refs/tags/v1.1.1"
+git tag -f v1.1.2 && git push <remote> main:main "+refs/tags/v1.1.2:refs/tags/v1.1.2"
 ```
 
 `dist/` 被 `.gitignore` 排除——二进制只进 release 附件，不进源码树。
-附件命名：`grillme-1.1.1-win64.zip`（exe + 文档）、`grillme-1.1.1.apk`、`grillme-1.1.1.zip`（安卓 + 文档）。
+附件命名：`grillme-1.1.2-win64.zip`（exe + 文档）、`grillme-1.1.2.apk`、`grillme-1.1.2.zip`（安卓 + 文档）。
+**只改电脑端时，安卓那两个附件不用重出**，release 里沿用上一版即可——但要在说明里写清楚。
 
 ---
 
@@ -577,6 +651,10 @@ SharedPreferences 就先 `assembleDebug` 装一版。
 
 ## 10. 待办与已知缺口
 
+- **托盘图标的"左键点击展开"没在真机上验过**：这台机器的沙箱吞掉合成的鼠标按键
+  （§6.17 最后一段）。已验证的是 `NIM_ADD` 成功、图标被提到任务栏、悬停 tooltip 正常、
+  `PostMessageW` 投递回调后能展开——差的只有 Explorer 投递那一环。第一次装到
+  真机上请先点一下图标确认；点不动的话再双击一次 exe（`wake.flag` 那条兜底是验过的）。
 - **电脑端还没接 `lang/strings.json`**：UI 里约 340 条中文字符串（去重 307）是硬编码的，日/俄没翻。
   安卓已经接了（`Lang.java` 读 `assets/strings.json`）。这是最大的一处不一致。
 - **安卓用的是 debug 签名**（`build.gradle` 里 `signingConfig signingConfigs.debug`），
@@ -604,8 +682,14 @@ SharedPreferences 就先 `assembleDebug` 装一版。
 - **不做 AI 分析回答**——要联网、要花钱，违背"离线可用"。
 - **电脑端不引第三方包**——只用标准库，所以截图手写 GDI+、HTTP 手写 WebDAV。
   想引 PIL/requests 之前先想清楚：这会毁掉"解压即用、不装依赖"这个前提。
-- **小条「收起」是缩成右下角一个小图标，不是隐藏，也不是缩成一个小圆点**——藏起来
-  用户就找不到，转头会再双击一次 exe，然后又变成两个实例（§6.14）；缩成"白框里一个
-  点"会被当成界面出错。现在是画出来的应用图标本体，见 §6.17。
+- **小条「收起」有两个形态，都必须留**：默认收进系统托盘（桌面上什么都不留），
+  设置里可以改成缩成右下角一个 24×24 的小方块。两个都不能砍——
+  藏起来用户就找不到，转头会再双击一次 exe，然后又变成两个实例（§6.14）；
+  而托盘在某些机器上会被策略禁掉，`Pill._use_tray()` 会自动退回悬浮方块。
+  **收起图标必须是应用图标本体**，不是圆环、不是白框里一个点——
+  试过蓝色圆环，用户说"这个小眼睛不如小方块"，见 §6.17。
+- **托盘的窗口过程不能改回 Python 回调**——会在点第一下的时候把进程打崩（§6.17）。
+  看着"这样写更直观"，实际是个必崩的写法。
 - **单实例锁不能去掉，第二个实例的消息框也不能去掉**——见 §6.14。两者是一套的：
-  锁负责不让它跑起来，框负责让用户知道为什么没跑起来。
+  锁负责不让它跑起来，框负责让用户知道为什么没跑起来。而且第二个实例写的
+  `wake.flag` 是托盘的兜底出口：万一托盘图标点不动，再双击一次 exe 就能把小条叫出来。
