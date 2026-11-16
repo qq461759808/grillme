@@ -32,8 +32,7 @@ keystore.properties
 # PyInstaller 构建中间产物（build/res 里的图标和版本信息要留着，能重现构建）
 build/win/
 build/tmp/
-build/pyi/
-build/pyi-console/
+build/pyi*/
 *.spec
 
 # 编辑器
